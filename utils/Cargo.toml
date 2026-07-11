@@ -1,0 +1,38 @@
+[package]
+name = "utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+defmt = "1.1.0"
+littlefs-rust = "0.1.0"
+block_device = "0.1.3"
+
+serde = { version = "1.0.228", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+serde_json = { version = "1.0.150", default-features = false, features = [
+    "alloc",
+] }
+
+embedded-io-async = "0.7.0"
+
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+    "icmp",
+    "tcp",
+    "udp",
+    "raw",
+    "dhcpv4",
+    "medium-ethernet",
+    "dns",
+] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }

@@ -1,0 +1,12 @@
+.DropZone {
+  border: dashed 3px #acf;
+  border-radius: 1rem;
+  background: #cef;
+  padding: 2rem 1rem;
+  text-align: center;
+  cursor: pointer;
+
+  &.dragging {
+    background: #9bf;
+  }
+}

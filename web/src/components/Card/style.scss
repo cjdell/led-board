@@ -1,0 +1,21 @@
+.card {
+  box-shadow: 0 0 10px var(--bs-gray-500);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .card-footer {
+    // Only show footer when it contains children...
+    display: none;
+    &:has(.card-footer-inner > *) {
+      display: block;
+    }
+  }
+}

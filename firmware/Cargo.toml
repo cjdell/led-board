@@ -1,0 +1,128 @@
+[package]
+name = "firmware"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chris Dell <cjdell@gmail.com>"]
+
+[features]
+defmt_tcp = []
+defmt_rtt = []
+
+[dependencies]
+animations = { path = "../animations", features = ["critical-section"] }
+defmt-tcp = { path = "../defmt_tcp" }
+rp235x-ota = { path = "../rp235x_ota" }
+utils = { path = "../utils" }
+
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+static_cell = "2.1.1"
+rand_core = "0.6.4"
+heapless = "0.9.3"
+fixed = "1.29.0"
+smart-leds = "0.4.0"
+num-traits = { version = "0.2.19", default-features = false }
+panic-reset = "0.1.1"
+block_device = "0.1.3"
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+littlefs-rust = "0.1.0"
+
+picoserve = { git = "https://github.com/cjdell/picoserve.git", features = [
+    "alloc",
+    "embassy",
+    "ws",
+] }
+# picoserve = { version = "0.18.0", features = ["alloc", "embassy", "ws"] }
+
+serde = { version = "1.0.228", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+serde_json = { version = "1.0.150", default-features = false, features = [
+    "alloc",
+] }
+
+embedded-alloc = { version = "*" }
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+embedded-io = "0.7.1"
+embedded-io-async = "0.7.0"
+embedded-storage = "0.3.1"
+embedded-hal-bus = { version = "0.3.0", features = ["async"] }
+embedded-graphics = "0.8.2"
+
+cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+cortex-m-rt = "0.7.0"
+critical-section = "1.2"
+portable-atomic = { version = "1.13.1", features = ["critical-section"] }
+
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+    "unstable-pac",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xa",
+    "binary-info",
+] }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+    "icmp",
+    "tcp",
+    "udp",
+    "raw",
+    "dhcpv4",
+    "medium-ethernet",
+    "dns",
+    "dhcpv4-hostname",
+] }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+    "executor-interrupt",
+] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+    "defmt-timestamp-uptime",
+] }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-net-wiznet = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
+embassy-boot = { git = "https://github.com/embassy-rs/embassy.git" }
+
+# Using fork with updated `embassy-time`
+edge-captive = { git = "https://github.com/cjdell/edge-net.git" }
+edge-dhcp = { git = "https://github.com/cjdell/edge-net.git" }
+edge-http = { git = "https://github.com/cjdell/edge-net.git" }
+edge-mdns = { git = "https://github.com/cjdell/edge-net.git" }
+edge-nal = { git = "https://github.com/cjdell/edge-net.git" }
+edge-nal-embassy = { git = "https://github.com/cjdell/edge-net.git" }
+edge-ws = { git = "https://github.com/cjdell/edge-net.git" }
+
+# edge-captive = { path = "../../edge-net/edge-captive" }
+# edge-dhcp = { path = "../../edge-net/edge-dhcp" }
+# edge-http = { path = "../../edge-net/edge-http" }
+# edge-mdns = { path = "../../edge-net/edge-mdns" }
+# edge-nal = { path = "../../edge-net/edge-nal" }
+# edge-nal-embassy = { path = "../../edge-net/edge-nal-embassy" }
+# edge-ws = { path = "../../edge-net/edge-ws" }
+
+# edge-captive = "*"
+# edge-dhcp = "*"
+# edge-http = "*"
+# edge-mdns = "*"
+# edge-nal = "*"
+# edge-nal-embassy = "*"
+# edge-ws = "*"

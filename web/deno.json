@@ -1,0 +1,38 @@
+{
+  "tasks": {
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview",
+    "compress": "deno run --allow-read --allow-write compress.ts",
+    "generate-manifest": "deno run --allow-read --allow-write generate-manifest.ts"
+  },
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "solid-js",
+    "lib": ["ESNext", "dom", "dom.iterable", "dom.asynciterable", "deno.ns"],
+    "types": ["vite/client"]
+  },
+  "fmt": {
+    "lineWidth": 140,
+    "trailingCommas": "onlyMultiLine"
+  },
+  "imports": {
+    "@deno/vite-plugin": "npm:@deno/vite-plugin@^1.0.6",
+    "@lib": "./src/lib/index.ts",
+    "@components": "./src/components/index.ts",
+    "@solidjs/router": "npm:@solidjs/router@^0.15.4",
+    "bootstrap": "npm:bootstrap@^5.3.8",
+    "comlink": "npm:comlink@^4.4.2",
+    "date-fns": "npm:date-fns@^4.1.0",
+    "sass-embedded": "npm:sass-embedded@^1.97.3",
+    "solid-devtools": "npm:solid-devtools@^0.34.5",
+    "solid-js": "npm:solid-js@^1.9.11",
+    "ts-essentials": "npm:ts-essentials@^10.1.1",
+    "typescript": "npm:typescript@^5.9.3",
+    "valibot": "npm:valibot@^1.2.0",
+    "vite": "npm:vite@^7.3.1",
+    "vite-plugin-solid": "npm:vite-plugin-solid@^2.11.10"
+  }
+}

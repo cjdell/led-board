@@ -1,0 +1,19 @@
+.date-input-date-picker-container {
+  @media (width > 576px) {
+    .date-picker {
+      position: absolute;
+      top: 40px;
+      left: 0;
+    }
+  }
+
+  @media (width <= 576px) {
+    .date-picker {
+      position: fixed;
+      left: 50dvw;
+      top: 50dvh;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0px 150px rgba(0, 0, 0, 0.5);
+    }
+  }
+}

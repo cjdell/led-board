@@ -1,0 +1,15 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip RP235x --base-address 0x10001000"
+rustflags = [
+    "-C",
+    "link-arg=-Tdefmt.x",
+    # "-C",
+    # "llvm-args=--enable-machine-outliner=never",
+]
+linker = "flip-link"
+
+# [build]
+# target = "thumbv8m.main-none-eabihf"
+
+[env]
+DEFMT_LOG = "info"

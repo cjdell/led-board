@@ -1,0 +1,17 @@
+.NavBar {
+  background: #eee;
+  display: flex;
+  box-shadow: 0 0 10px var(--bs-gray-500);
+  z-index: 1;
+
+  &__link {
+    padding: 1rem 0.5rem;
+    color: #000;
+    text-decoration: none;
+
+    &--selected {
+      background: #999;
+      color: #fff;
+    }
+  }
+}

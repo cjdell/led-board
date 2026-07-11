@@ -1,0 +1,9 @@
+{
+    "rust-analyzer.cargo.target": "thumbv8m.main-none-eabihf",
+    "rust-analyzer.cargo.allTargets": false,
+    "editor.formatOnSave": true,
+    "rust-analyzer.checkOnSave": false,
+    "rust-analyzer.cargo.features": [
+        "defmt_tcp"
+    ],
+}
