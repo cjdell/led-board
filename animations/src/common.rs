@@ -30,12 +30,26 @@ where
 pub type BufferTargetRgb888 = BufferTarget<Rgb888>;
 pub type BufferTargetRgb565 = BufferTarget<Rgb565>;
 
+#[derive(Default, Debug, Clone)]
+pub struct AnimationParams {
+    pub beat: u8,
+    pub low: u8,
+    pub med: u8,
+    pub high: u8,
+}
+
+impl AnimationParams {
+    pub fn new(beat: u8, low: u8, med: u8, high: u8) -> Self {
+        Self { beat, low, med, high }
+    }
+}
+
 pub trait CloneableAnimation {
     fn clone_box(&self) -> Box<dyn Animation>;
 }
 
 pub trait Animation: CloneableAnimation {
-    fn draw(&mut self, ms_since_start: u32, target: &mut BufferTargetRgb888) -> ();
+    fn draw(&mut self, ms_since_start: u32, params: &AnimationParams, target: &mut BufferTargetRgb888) -> ();
 }
 
 impl Clone for Box<dyn Animation> {

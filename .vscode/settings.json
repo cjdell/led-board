@@ -4,6 +4,7 @@
     "editor.formatOnSave": true,
     "rust-analyzer.checkOnSave": false,
     "rust-analyzer.cargo.features": [
-        "defmt_tcp"
+        "defmt_tcp",
+        "ppp"
     ],
 }

@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use embedded_io_async::{Read, Write};
 use picoserve::{
     ResponseSent,
@@ -46,7 +47,7 @@ pub fn html_app_response() -> impl IntoResponse {
 }
 
 pub fn cors_options_response<'a>() -> impl IntoResponse + use<'a> {
-    Response::new(StatusCode::OK, "").with_headers([
+    Response::empty(StatusCode::OK).with_headers([
         ("Access-Control-Allow-Origin", "*"),
         ("Access-Control-Allow-Methods", "*"),
         ("Access-Control-Allow-Headers", "*"),
@@ -54,10 +55,12 @@ pub fn cors_options_response<'a>() -> impl IntoResponse + use<'a> {
 }
 
 pub fn json_response(json: &str) -> impl IntoResponse + use<'_> {
-    Response::new(StatusCode::OK, json).with_headers([
-        ("Access-Control-Allow-Origin", "*"),
-        ("Content-Type", "application/json"),
-    ])
+    Response::ok(json)
+        .with_headers([
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "application/json"),
+        ])
+        .with_headers([("Content-Length", json.len())])
 }
 
 // pub fn text_response(json: &str) -> impl IntoResponse + use<'_> {

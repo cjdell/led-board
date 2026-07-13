@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 std = ["once_cell/std"]
 critical-section = ["once_cell/critical-section"]
+defmt = ["dep:defmt"]
 
 [dependencies]
 embedded-graphics = "0.8.2"
@@ -25,3 +26,10 @@ once_cell = { version = "1.21.4", default-features = false, features = [
     "alloc",
 ] }
 tupl = "0.5.1"
+serde = { version = "1.0.228", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+ringbuf = { version = "0.5.0", default-features = false, features = ["alloc"] }
+
+defmt = { version = "1.0.1", optional = true }

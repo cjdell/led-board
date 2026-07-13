@@ -14,4 +14,6 @@ export function getDeviceApi(): DeviceApi {
   } else {
     return new BadgeDeviceApi();
   }
+
+  // return new BadgeDeviceApi("mypico2w.local");
 }

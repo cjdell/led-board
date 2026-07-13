@@ -7,9 +7,15 @@ authors = ["Chris Dell <cjdell@gmail.com>"]
 [features]
 defmt_tcp = []
 defmt_rtt = []
+wifi = []
+usb_ethernet = []
+ppp = []
 
 [dependencies]
-animations = { path = "../animations", features = ["critical-section"] }
+animations = { path = "../animations", features = [
+    "critical-section",
+    "defmt",
+] }
 defmt-tcp = { path = "../defmt_tcp" }
 rp235x-ota = { path = "../rp235x_ota" }
 utils = { path = "../utils" }
@@ -27,11 +33,13 @@ panic-reset = "0.1.1"
 block_device = "0.1.3"
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 littlefs-rust = "0.1.0"
+# async-io = { version = "2.6.0", default-features = false }
 
 picoserve = { git = "https://github.com/cjdell/picoserve.git", features = [
     "alloc",
     "embassy",
     "ws",
+    "json",
 ] }
 # picoserve = { version = "0.18.0", features = ["alloc", "embassy", "ws"] }
 
@@ -101,6 +109,12 @@ embassy-net-wiznet = { git = "https://github.com/embassy-rs/embassy.git", featur
     "defmt",
 ] }
 embassy-boot = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
+embassy-net-ppp = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "defmt",
+] }
 
 # Using fork with updated `embassy-time`
 edge-captive = { git = "https://github.com/cjdell/edge-net.git" }

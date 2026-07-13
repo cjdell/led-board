@@ -1,6 +1,18 @@
 import { sleep, WifiResultSchema } from "@lib";
 import * as v from "valibot";
-import { DeviceApi, DeviceConfig, DeviceConfigSchema, DeviceFile, DeviceMessage, FrameBufferListener, WifiResult } from "./common.ts";
+import {
+  Animation,
+  AnimationSchema,
+  DeviceApi,
+  DeviceConfig,
+  DeviceConfigSchema,
+  DeviceFile,
+  DeviceMessage,
+  FrameBufferListener,
+  Playlist,
+  PlaylistSchema,
+  WifiResult,
+} from "./common.ts";
 
 export class BadgeDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
@@ -91,6 +103,22 @@ export class BadgeDeviceApi implements DeviceApi {
       headers: [["Content-Type", "application/octet-stream"]],
       body: bytes,
     });
+  }
+
+  public async getAnimationList(): Promise<Animation[]> {
+    const res = await fetch(`${this.baseUrl}info/animations`);
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+    return v.parse(v.array(AnimationSchema), await res.json());
+  }
+
+  public async getPlaylist(): Promise<Playlist> {
+    const res = await fetch(`${this.baseUrl}info/playlist`);
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+    return v.parse(PlaylistSchema, await res.json());
   }
 
   public async listFiles(): Promise<readonly DeviceFile[]> {

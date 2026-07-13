@@ -1,0 +1,11 @@
+[package]
+name = "ws_client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+env_logger = "0.11.11"
+fast_websocket_client = "0.4.1"
+log = { version = "0.4.33", features = ["std"] }
+tokio = "1.52.3"
+tungstenite = "0.30.0"

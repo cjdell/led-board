@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
-use animations::{AnimationRunner, BufferTarget, ScrollingMessage, apply_power_limit};
+use animations::{AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, apply_power_limit, playlist};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use defmt::*;
 use embassy_executor::{Executor, Spawner};
@@ -24,6 +24,7 @@ use embassy_rp::{
     peripherals::*,
     pio::{InterruptHandler, Pio},
     trng::{self, Trng},
+    usb,
     watchdog::Watchdog,
 };
 use embassy_sync::rwlock::RwLock;
@@ -31,21 +32,22 @@ use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap as Heap;
 use embedded_graphics::pixelcolor::Rgb888;
 use firmware::{
-    config::LedBoardConfig,
+    config::{DEFAULT_PLAYLIST_FILENAME, LedBoardConfig},
     flash::{FlashStorage, LittleFsFlashStorage},
     led_screen::LedScreen,
     make_static,
     tasks::{
+        WifiControl,
         http::{self, AppProps},
-        wifi::{WifiControl, init_wifi},
     },
     types::*,
     ws2812p::{PioWs2812ParallelDriver, PioWs2812ParallelProgram},
 };
+use smart_leds::RGB8;
 use static_cell::StaticCell;
 use utils::{
     config::{ConfigFile, storage::LocalFsConfigFileStorage},
-    local_fs::LocalFs,
+    local_fs::{LocalFs, LocalFsTrait as _},
 };
 
 #[cfg(feature = "defmt_tcp")]
@@ -86,6 +88,7 @@ bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH2>, dma::InterruptHandler<DMA_CH3>;
+    USBCTRL_IRQ => usb::InterruptHandler<USB>;
     TRNG_IRQ => trng::InterruptHandler<TRNG>;
 });
 
@@ -212,20 +215,47 @@ async fn main(spawner: Spawner) {
     )
     .await;
 
-    info!("Starting WiFi...");
+    info!("Starting Network...");
 
-    let (stack, wifi_control) = init_wifi(
-        spawner,
-        spi,
-        p.PIN_23,
-        trng,
-        ethernet_signal,
-        config_file.clone(),
-        watchdog.clone(),
-    )
-    .await;
+    #[cfg(feature = "wifi")]
+    let (stack, wifi_control) = {
+        firmware::tasks::wifi::init_wifi(
+            spawner,
+            spi,
+            p.PIN_23,
+            trng,
+            ethernet_signal,
+            config_file.clone(),
+            watchdog.clone(),
+        )
+        .await
+    };
 
-    info!("Waiting for WiFi...");
+    #[cfg(feature = "usb_ethernet")]
+    let (stack, wifi_control) = {
+        let driver = usb::Driver::new(p.USB, Irqs);
+
+        firmware::tasks::usb_ethernet::init_usb_ethernet(
+            spawner,
+            spi,
+            p.PIN_23,
+            driver,
+            trng,
+            ethernet_signal,
+            config_file.clone(),
+            watchdog.clone(),
+        )
+        .await
+    };
+
+    #[cfg(feature = "ppp")]
+    let (stack, wifi_control) = {
+        let driver = usb::Driver::new(p.USB, Irqs);
+
+        firmware::tasks::ppp::init_ppp(spawner, spi, p.PIN_23, driver, trng, ethernet_signal, watchdog.clone()).await
+    };
+
+    info!("Waiting for Network...");
 
     let mut receiver = ethernet_signal.receiver().unwrap();
 
@@ -247,21 +277,23 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(watchdog_runner(watchdog.clone(), wifi_control, activity_watch_receiver).unwrap());
 
-    // let files = local_fs.list_files().await.expect("list");
-    // info!("Files: {}", defmt::Debug2Format(&files));
-
-    // local_fs
-    //     .write_binary_chunk("file.bin", 0, &[0x55, 0xAA], true)
-    //     .await
-    //     .expect("write");
-
-    // let bytes = local_fs.read_binary_chunk("file.bin", 0, 2).await.expect("read");
-    // info!("Data: {}", defmt::Debug2Format(&bytes));
-
-    // let files = local_fs.list_files().await.expect("list");
-    // info!("Files: {}", defmt::Debug2Format(&files));
-
-    // use_local_fs(local_fs.clone()).await;
+    match local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
+        Ok(json) => {
+            match serde_json::from_str::<Vec<(AnimationEnum, u32)>>(&json) {
+                Ok(playlist_data) => {
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::Playlist(playlist_data))
+                        .await;
+                }
+                Err(err) => {
+                    error!("Could not read default playlist: {}", defmt::Debug2Format(&err));
+                }
+            };
+        }
+        Err(err) => {
+            error!("Could not read default playlist: {}", defmt::Debug2Format(&err));
+        }
+    };
 
     let flash_storage = FlashStorage::new(flash);
 
@@ -278,12 +310,6 @@ async fn main(spawner: Spawner) {
             watchdog.clone(),
         ),
     );
-
-    // let led_screen = Arc::new(RwLock::<CriticalSectionRawMutex, _>::new(led_screen));
-
-    // let mut current_animation_index: usize = 0;
-    // let anim: RwLock<CriticalSectionRawMutex, Box<dyn Animation>> = RwLock::new(Box::new(Columns {}));
-    // let last_write: RwLock<CriticalSectionRawMutex, _> = RwLock::new(embassy_time::Instant::now());
 
     let ws_fut = async {
         loop {
@@ -315,11 +341,46 @@ async fn main(spawner: Spawner) {
                     // led_screen.copy_buffer(full_buffer);
                     // led_screen.flush().await;
                 }
-                WebSocketIncomingMessage::NoteOn(_) => {
-                    // let mut anim = anim.write().await;
-                    // *anim = Box::new(Circles {});
+                WebSocketIncomingMessage::Next => {
+                    display_worker_sender.send(DisplayWorkerMessage::Next).await;
                 }
-                _ => (),
+                WebSocketIncomingMessage::Animation(animation_enum, length_ms) => {
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::Animation(animation_enum, length_ms))
+                        .await;
+                }
+                WebSocketIncomingMessage::Playlist { playlist, save } => {
+                    if save {
+                        match serde_json::to_string(&playlist) {
+                            Ok(json) => {
+                                local_fs.write_text_file(DEFAULT_PLAYLIST_FILENAME, json).await;
+                            }
+                            Err(err) => {
+                                error!("Could not serialise playlist JSON: {}", defmt::Debug2Format(&err));
+                            }
+                        }
+                    }
+
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::Playlist(playlist))
+                        .await;
+                }
+                WebSocketIncomingMessage::ParamsBuffer(bytes) => {
+                    let params_buffer = bytes
+                        .into_chunks::<4>()
+                        .into_iter()
+                        .map(|chunk| AnimationParams::new(chunk[0], chunk[1], chunk[2], chunk[3]))
+                        .collect::<Vec<AnimationParams>>();
+
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::ParamsBuffer(params_buffer))
+                        .await;
+                }
+                WebSocketIncomingMessage::PowerLimit(power_limit) => {
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::PowerLimit(power_limit))
+                        .await;
+                }
             }
         }
     };
@@ -334,60 +395,6 @@ async fn main(spawner: Spawner) {
 
             Timer::after(Duration::from_millis(100)).await;
         }
-
-        //     let mut target = BufferTarget::new();
-
-        //     let start_time = embassy_time::Instant::now();
-        //     let mut last_time = embassy_time::Instant::now();
-
-        //     loop {
-        //         if embassy_time::Instant::now() - *last_write.read().await < embassy_time::Duration::from_secs(5) {
-        //             // Don't animate if the WebSocket is active...
-        //             Timer::after(Duration::from_secs(1)).await;
-        //             continue;
-        //         }
-
-        //         let now = embassy_time::Instant::now();
-
-        //         let time_since_start = now.duration_since(start_time);
-        //         let time_since_last_frame = now.duration_since(last_time);
-
-        //         last_time = now;
-
-        //         // target.clear(Rgb888::BLACK).unwrap();
-        //         target.buffer.fill(Rgb888::default());
-
-        //         {
-        //             let mut anim = anim.write().await;
-        //             anim.draw(time_since_start.as_millis() as u32, &mut target);
-        //         }
-
-        //         {
-        //             let mut led_screen = led_screen.write().await;
-        //             led_screen.copy_eg_buffer(&target.buffer);
-        //             led_screen.flush().await;
-        //         }
-
-        //         // yield_now().await;
-        //         Timer::after(Duration::from_millis(1)).await;
-
-        //         if is_bootsel_pressed(p.BOOTSEL.reborrow()) {
-        //             // warn!("Rebooting...");
-        //             // Timer::after(Duration::from_secs(1)).await;
-        //             // reset_to_usb_boot(0, 0);
-
-        //             info!("Next animation...");
-
-        //             current_animation_index = (current_animation_index + 1) % NUM_ANIMATIONS;
-
-        //             {
-        //                 let mut anim = anim.write().await;
-        //                 *anim = get_animation(current_animation_index);
-        //             }
-
-        //             Timer::after(Duration::from_millis(100)).await;
-        //         }
-        //     }
     };
 
     join(ws_fut, animation_fut).await;
@@ -408,6 +415,8 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
     let mut runner = AnimationRunner::new();
     let mut last_time = embassy_time::Instant::now();
 
+    let mut power_limit = 0.1f32;
+
     loop {
         let now = embassy_time::Instant::now();
         let time_since_last_frame = now.duration_since(last_time);
@@ -418,21 +427,30 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
         if let Ok(msg) = receiver.try_receive() {
             match msg {
                 DisplayWorkerMessage::Next => {
-                    // runner.next();
-
-                    runner.set_override_animation(
-                        Box::new(ScrollingMessage {
-                            msg: "The quick brown fox jumped over the lazy dog.".to_string(),
-                        }),
-                        6_000,
-                    );
+                    info!("Next");
+                    runner.next();
                 }
+                DisplayWorkerMessage::Animation(animation, length_ms) => {
+                    info!("Override Animation");
+                    runner.set_override_animation(Box::new(animation), length_ms);
+                }
+                DisplayWorkerMessage::Playlist(playlist_data) => {
+                    info!("Update playlist");
+                    runner.update_playlist(playlist_data);
+                }
+                DisplayWorkerMessage::ParamsBuffer(params_buffer) => {
+                    info!("Params Buffer");
+                    for params in params_buffer {
+                        runner.push_params(params);
+                    }
+                }
+                DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
             }
         }
 
         runner.update(delta_ms, &mut buffer_1, &mut buffer_2);
 
-        apply_power_limit(&mut buffer_1, 0.1);
+        apply_power_limit(&mut buffer_1, power_limit);
 
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;

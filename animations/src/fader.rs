@@ -1,4 +1,4 @@
-use crate::common::{Animation, BufferTargetRgb888};
+use crate::common::{Animation, AnimationParams, BufferTargetRgb888};
 use alloc::boxed::Box;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor as _};
 use tupl::NonEmptyTuple as _;
@@ -38,7 +38,13 @@ impl AnimationFader {
         }
     }
 
-    pub fn update(&mut self, delta_ms: u32, buffer_1: &mut BufferTargetRgb888, buffer_2: &mut BufferTargetRgb888) {
+    pub fn update(
+        &mut self,
+        delta_ms: u32,
+        params: &AnimationParams,
+        buffer_1: &mut BufferTargetRgb888,
+        buffer_2: &mut BufferTargetRgb888,
+    ) {
         if let Some(ref mut previous_animation) = self.previous_animation {
             previous_animation.1 += delta_ms;
         }
@@ -57,21 +63,26 @@ impl AnimationFader {
         }
 
         // Draw current animation into old_buffer
-        self.current_animation.0.draw(self.current_animation.1, buffer_1);
+        self.current_animation
+            .0
+            .draw(self.current_animation.1, &params, buffer_1);
 
         // Draw previous animation into target (for fading)
         if let Some(ref mut prev) = self.previous_animation {
-            prev.0.draw(prev.1, buffer_2);
+            prev.0.draw(prev.1, &params, buffer_2);
 
-            // Blend pixels based on fade_progress
-            for (new_pixel, old_pixel) in buffer_1.buffer.iter_mut().zip(buffer_2.buffer.iter()) {
-                let ratio = self.fade_progress;
-                *new_pixel = Rgb888::new(
-                    (old_pixel.r() as f32 * (1.0 - ratio) + new_pixel.r() as f32 * ratio) as u8,
-                    (old_pixel.g() as f32 * (1.0 - ratio) + new_pixel.g() as f32 * ratio) as u8,
-                    (old_pixel.b() as f32 * (1.0 - ratio) + new_pixel.b() as f32 * ratio) as u8,
-                );
-            }
+            apply_fade(buffer_1, self.fade_progress, buffer_2, 1.0 - self.fade_progress);
         }
+    }
+}
+
+fn apply_fade(buffer_1: &mut BufferTargetRgb888, mix_1: f32, buffer_2: &BufferTargetRgb888, mix_2: f32) {
+    // Blend pixels based on fade_progress
+    for (new_pixel, old_pixel) in buffer_1.buffer.iter_mut().zip(buffer_2.buffer.iter()) {
+        *new_pixel = Rgb888::new(
+            (old_pixel.r() as f32 * mix_2 + new_pixel.r() as f32 * mix_1) as u8,
+            (old_pixel.g() as f32 * mix_2 + new_pixel.g() as f32 * mix_1) as u8,
+            (old_pixel.b() as f32 * mix_2 + new_pixel.b() as f32 * mix_1) as u8,
+        );
     }
 }

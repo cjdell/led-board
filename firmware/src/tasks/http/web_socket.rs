@@ -1,5 +1,6 @@
 use crate::types::*;
 use alloc::vec::Vec;
+use animations::TOTAL_PIXELS;
 use defmt::*;
 use picoserve::{
     futures::Either,
@@ -58,17 +59,17 @@ impl WebSocketCallback for WebSocketHandler {
                     self.web_socket_incoming_sender.send(message).await;
                 }
                 Message::Binary(message) => {
-                    // let message = match serde_json::from_slice(message) {
-                    //     Ok(message) => message,
-                    //     Err(err) => {
-                    //         error!("Serde Error");
-                    //         continue;
-                    //     }
-                    // };
-                    // self.web_socket_incoming_sender.send(message).await;
-                    self.web_socket_incoming_sender
-                        .send(WebSocketIncomingMessage::FrameBuffer(message.to_vec()))
-                        .await;
+                    if message.len() == 100 * 4 {
+                        self.web_socket_incoming_sender
+                            .send(WebSocketIncomingMessage::ParamsBuffer(message.to_vec()))
+                            .await;
+                    }
+
+                    if message.len() == TOTAL_PIXELS * 3 {
+                        self.web_socket_incoming_sender
+                            .send(WebSocketIncomingMessage::FrameBuffer(message.to_vec()))
+                            .await;
+                    }
                 }
                 Message::Close(reason) => {
                     info!("Websocket close reason: {:?}", reason);

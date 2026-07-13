@@ -1,6 +1,16 @@
 import { DeviceFileSchema } from "@lib";
 import * as v from "valibot";
-import { DeviceApi, DeviceConfig, DeviceConfigSchema, DeviceFile, DeviceMessage, FrameBufferListener, WifiResult } from "./common.ts";
+import {
+  Animation,
+  DeviceApi,
+  DeviceConfig,
+  DeviceConfigSchema,
+  DeviceFile,
+  DeviceMessage,
+  FrameBufferListener,
+  Playlist,
+  WifiResult,
+} from "./common.ts";
 
 export class DummyDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
@@ -11,9 +21,6 @@ export class DummyDeviceApi implements DeviceApi {
 
   public async getDeviceConfig(): Promise<DeviceConfig> {
     return {
-      owner_name: "Nameless",
-      app_store_url: "http://foo",
-      firmware_url: "http://foo",
       wifi_mode: "AccessPoint",
       ap_ssid: "aaaa",
       known_wifi_networks: [{
@@ -49,6 +56,19 @@ export class DummyDeviceApi implements DeviceApi {
         password_required: false,
       },
     ];
+  }
+
+  public async getAnimationList(): Promise<Animation[]> {
+    return [
+      "Animation1",
+      { "Animation2": 1 },
+      { "Animation3": [1, "Message"] },
+      // { "Animation4": { "Prop1": 1, "Prop2": "aaa" } },
+    ];
+  }
+
+  public async getPlaylist(): Promise<Playlist> {
+    return [["Animation1", 1_000]];
   }
 
   public async sendMessage(message: DeviceMessage) {

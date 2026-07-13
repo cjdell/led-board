@@ -3,6 +3,8 @@
 #![feature(core_intrinsics)]
 
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 #[macro_use]
 pub mod common;

@@ -1,19 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["animations", "defmt_tcp", "firmware", "rp235x_ota", "sim", "utils"]
+members = [
+    "animations",
+    "defmt_tcp",
+    "firmware",
+    "rp235x_ota",
+    "sim",
+    "utils",
+    "ws_client",
+]
 
 [profile.release]
 debug = 2
 lto = true
 opt-level = 'z'
-
-# [profile.dev]
-# debug = 2
-# lto = true
-# opt-level = 's'
-
-# [patch.crates-io]
-# embassy-time = { git = "https://github.com/embassy-rs/embassy.git" }
-# embassy-sync = { git = "https://github.com/embassy-rs/embassy.git" }
-# embassy-futures = { git = "https://github.com/embassy-rs/embassy.git" }
-# embassy-net = { git = "https://github.com/embassy-rs/embassy.git" }

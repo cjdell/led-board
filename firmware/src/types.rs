@@ -1,5 +1,6 @@
 use crate::{config::LedBoardConfig, flash::LittleFsFlashStorage};
 use alloc::{sync::Arc, vec::Vec};
+use animations::{AnimationEnum, AnimationParams};
 use core::net::Ipv4Addr;
 use embassy_rp::watchdog::Watchdog;
 use embassy_sync::{
@@ -20,20 +21,31 @@ pub enum EthernetSignalMessage {
 pub type EthernetSignal = Watch<CriticalSectionRawMutex, EthernetSignalMessage, 10>;
 pub type EthernetSignalSender = watch::Sender<'static, CriticalSectionRawMutex, EthernetSignalMessage, 10>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum WebSocketIncomingMessage {
     Ping,
-    NoteOn(u8),
-    NoteOff(u8),
     FrameBuffer(Vec<u8>),
+    Next,
+    Animation(AnimationEnum, u32),
+    Playlist {
+        playlist: Vec<(AnimationEnum, u32)>,
+        save: bool,
+    },
+    ParamsBuffer(Vec<u8>),
+    PowerLimit(f32),
 }
 
 pub type WebSocketIncomingChannel = Channel<CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
 pub type WebSocketIncomingSender = channel::Sender<'static, CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
 pub type WebSocketIncomingReceiver = channel::Receiver<'static, CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
 
+#[derive(Clone)]
 pub enum DisplayWorkerMessage {
     Next,
+    Animation(AnimationEnum, u32),
+    Playlist(Vec<(AnimationEnum, u32)>),
+    ParamsBuffer(Vec<AnimationParams>),
+    PowerLimit(f32),
 }
 
 pub type DisplayWorkerChannel = Channel<CriticalSectionRawMutex, DisplayWorkerMessage, 1>;

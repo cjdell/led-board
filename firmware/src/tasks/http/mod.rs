@@ -1,18 +1,20 @@
 #[macro_use]
 mod macros;
 
-mod animation;
 mod common;
 mod config;
+mod info;
 mod ota;
 mod web_socket;
 
-use super::http::{common::*, web_socket::WebSocketHandler};
 use crate::{
     flash::FlashStorage,
     tasks::http::{
+        common::*,
         config::{GetConfigHandler, SaveConfigHandler},
+        info::{GetAnimationsHandler, GetPlaylistHandler},
         ota::OtaUpdateHandler,
+        web_socket::WebSocketHandler,
     },
     types::*,
 };
@@ -59,6 +61,8 @@ impl AppBuilder for AppProps {
         let config_file_1 = self.config_file.clone();
         let config_file_2 = self.config_file.clone();
 
+        let local_fs_1 = self.local_fs.clone();
+
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
             .route("/config", get(async |_: RequestInfo| html_app_response()))
@@ -77,6 +81,12 @@ impl AppBuilder for AppProps {
                             "Unreachable"
                         })
                         .options(async || cors_options_response()),
+                    )
+                    .nest(
+                        "/info",
+                        Router::new()
+                            .route("/animations", get_service(GetAnimationsHandler::new()))
+                            .route("/playlist", get_service(GetPlaylistHandler::new(local_fs_1))),
                     )
                     .route(
                         "/ws",

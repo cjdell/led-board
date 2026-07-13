@@ -1,14 +1,212 @@
-import { GlobalDeviceApi } from "@lib";
+import { Button, Card } from "@components";
+import { Animation, AnimationParams, assertError, assertUnreachable, GlobalDeviceApi, openAlert, Playlist } from "@lib";
 import { RouteSectionProps } from "@solidjs/router";
+import { createEffect, createResource, createSignal, For } from "solid-js";
 
 export function RemoteRoute(props: RouteSectionProps) {
   const api = GlobalDeviceApi;
 
-  // api.getAnimationInfo();
+  const [animations, {}] = createResource(async () => {
+    try {
+      return await api.getAnimationList();
+    } catch (err: unknown) {
+      assertError(err);
+      console.error(err);
+      openAlert("Error", err.message);
+      return [];
+    }
+  });
+  const [playlist, { mutate }] = createResource<Playlist>(() => api.getPlaylist());
+
+  const onAddAnimation = async (animation: Animation) => {
+    if (!playlist.latest) return;
+    mutate([...playlist.latest, [animation, 10_000]]);
+  };
+
+  const onUpdatePlaylistAnimation = async (idx: number, animation: Animation) => {
+    if (!playlist.latest) return;
+
+    if (JSON.stringify(playlist.latest[idx]) !== JSON.stringify([animation, 10_000])) {
+      const playlist_clone = structuredClone(playlist.latest);
+
+      playlist_clone[idx] = [animation, 10_000];
+
+      mutate(playlist_clone);
+    }
+  };
+
+  const onSave = async () => {
+    if (!playlist.latest) return;
+
+    await api.sendMessage({ Playlist: { playlist: playlist.latest, save: false } });
+  };
 
   return (
     <div class="grid">
-      TODO Select
+      <div class="g-col-12 g-col-md-6">
+        <Card colour="warning">
+          <Card.Header text="Animation Library" />
+          <Card.Body>
+            <div class="d-flex flex-column gap-2">
+              <For each={animations()}>
+                {(animation) => (
+                  <div>
+                    {/* {JSON.stringify(animation)} */}
+                    <AnimationForm animation={animation} onSave={onAddAnimation} />
+                  </div>
+                )}
+              </For>
+            </div>
+          </Card.Body>
+        </Card>
+      </div>
+      <div class="g-col-12 g-col-md-6">
+        <Card colour="info">
+          <Card.Header text="Playlist" />
+          <Card.Body>
+            <div class="d-flex flex-column gap-2">
+              <For each={playlist()}>
+                {(animation, idx) => <AnimationForm animation={animation[0]} onUpdate={(a) => onUpdatePlaylistAnimation(idx(), a)} />}
+              </For>
+            </div>
+          </Card.Body>
+          <Card.Footer>
+            <Button colour="primary" on:click={() => onSave()}>Save</Button>
+          </Card.Footer>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+interface Props {
+  animation: Animation;
+  onSave?: (animation: Animation) => Promise<void>;
+  onUpdate?: (animation: Animation) => Promise<void>;
+}
+
+export function AnimationForm(props: Props) {
+  const [animation, setAnimation] = createSignal<Animation>(props.animation);
+
+  // Handle primitive value updates (string, number, boolean)
+  const primitiveForm = (value: string | number | boolean, path: string[]) => {
+    const updateValue = (newValue: any) => {
+      setAnimation((prev) => {
+        // Deep update using path
+        const clone = structuredClone(prev);
+        let current: any = clone;
+        for (let i = 0; i < path.length - 1; i++) {
+          current = current[path[i]];
+        }
+        current[path[path.length - 1]] = newValue;
+        return clone;
+      });
+    };
+
+    if (typeof value === "string") {
+      return (
+        <input
+          type="text"
+          value={value}
+          on:change={(e) => updateValue(e.currentTarget.value)}
+        />
+      );
+    } else if (typeof value === "number") {
+      return (
+        <input
+          type="number"
+          value={value}
+          on:change={(e) => updateValue(Number(e.currentTarget.value))}
+        />
+      );
+    } else if (typeof value === "boolean") {
+      return (
+        <input
+          type="checkbox"
+          checked={value}
+          on:change={(e) => updateValue(e.currentTarget.checked)}
+        />
+      );
+    } else {
+      assertUnreachable(value);
+    }
+  };
+
+  // Handle params (array or object)
+  const paramsForm = (params: AnimationParams, path: string[] = []) => {
+    if (typeof params === "string" || typeof params === "number" || typeof params === "boolean") {
+      return (
+        <div class="mb-2">
+          {primitiveForm(params, path)}
+        </div>
+      );
+    } else if (Array.isArray(params)) {
+      return (
+        <div>
+          {params.map((param, index) => paramsForm(param, [...path, index.toString()]))}
+        </div>
+      );
+    } else if (typeof params === "object" && params !== null) {
+      return (
+        <div>
+          {Object.entries(params).map(([key, value]) => (
+            <div class="mb-2">
+              <label class="font-medium">{key}:</label>
+              {paramsForm(value, [...path, key])}
+            </div>
+          ))}
+        </div>
+      );
+    } else {
+      assertUnreachable(params);
+    }
+  };
+
+  // Render the full form
+  const form = () => {
+    const _animation = animation();
+
+    if (typeof _animation === "string") {
+      // Handle top-level primitive (unlikely but possible)
+      return (
+        <div>
+          {_animation}
+        </div>
+      );
+    } else if (typeof _animation === "object" && _animation !== null) {
+      const keys = Object.keys(_animation);
+      if (keys.length === 0) {
+        return <div>No animation properties</div>;
+      }
+
+      return (
+        <div>
+          {keys.map((animationName) => {
+            const params = _animation[animationName];
+            return (
+              <div class="mb-2 p-2 border rounded">
+                <h3 class="font-bold">{animationName}</h3>
+                {paramsForm(params, [animationName])}
+              </div>
+            );
+          })}
+        </div>
+      );
+    } else {
+      assertUnreachable(_animation);
+    }
+  };
+
+  if (props.onUpdate) {
+    createEffect(() => {
+      props.onUpdate!(animation());
+    });
+  }
+
+  return (
+    <div class="p-2 border">
+      {form()}
+      {props.onSave && <Button colour="primary" on:click={async () => await props.onSave!(animation())}>Add</Button>}
     </div>
   );
 }

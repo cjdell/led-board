@@ -5,6 +5,8 @@ use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 use utils::config::StateError;
 
+pub const DEFAULT_PLAYLIST_FILENAME: &str = "playlist_default.json";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)] // This will merge in defaults for new properties and effectively allow migrations
 pub struct LedBoardConfig {
