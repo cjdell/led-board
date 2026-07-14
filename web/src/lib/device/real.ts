@@ -14,7 +14,7 @@ import {
   WifiResult,
 } from "./common.ts";
 
-export class BadgeDeviceApi implements DeviceApi {
+export class RealDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
 
   private readonly baseUrl;

@@ -70,6 +70,7 @@ impl AnimationRunner {
 
     pub fn update_playlist(&mut self, playlist_data: Vec<(AnimationEnum, u32)>) {
         self.playlist.update(playlist_data);
+        self.next();
     }
 
     fn restore_animation(&mut self) {

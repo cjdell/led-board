@@ -65,6 +65,7 @@ impl AppBuilder for AppProps {
 
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
+            .route("/remote", get(async |_: RequestInfo| html_app_response()))
             .route("/config", get(async |_: RequestInfo| html_app_response()))
             .nest(
                 "/api",

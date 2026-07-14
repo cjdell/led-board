@@ -9,6 +9,7 @@ extern crate std;
 #[macro_use]
 pub mod common;
 pub mod animations;
+pub mod draw;
 pub mod fader;
 pub mod playlist;
 pub mod runner;

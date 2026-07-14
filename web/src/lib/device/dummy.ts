@@ -62,7 +62,7 @@ export class DummyDeviceApi implements DeviceApi {
     return [
       "Animation1",
       { "Animation2": 1 },
-      { "Animation3": [1, "Message"] },
+      { "Animation3": [1, "Message", true] },
       // { "Animation4": { "Prop1": 1, "Prop2": "aaa" } },
     ];
   }

@@ -3,7 +3,10 @@ use animations::{
     apply_power_limit,
 };
 use embedded_graphics::pixelcolor::{IntoStorage, Rgb888, RgbColor as _};
-use minifb::{Key, Scale, Window, WindowOptions};
+use minifb::{
+    Key::{self, M},
+    Scale, Window, WindowOptions,
+};
 use sim::sim_screen::{HEIGHT, SimScreen, WIDTH};
 use std::{
     f32::consts::PI,
@@ -50,7 +53,10 @@ fn main() {
 
             for _ in 0..100 {
                 let beat = ((((t as f32) * 0.001 * PI * 2.0).sin() + 1.0) * 0.5 * 255.0) as u8;
-                runner.push_params(AnimationParams::new(beat, 0, 0, 0));
+                let low = ((((t as f32) * 0.001 * PI * 2.0).cos() + 1.0) * 0.5 * 255.0) as u8;
+                let med = ((((t as f32) * 0.001 * PI * 2.0).sin() + 1.0) * 0.25 * 255.0) as u8;
+                let high = ((((t as f32) * 0.001 * PI * 2.0).cos() + 1.0) * 0.25 * 255.0) as u8;
+                runner.push_params(AnimationParams::new(beat, low, med, high));
                 t += 10;
             }
 

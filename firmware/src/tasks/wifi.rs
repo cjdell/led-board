@@ -84,7 +84,7 @@ pub async fn init_wifi(
     control.set_power_management(PowerManagementMode::None).await;
 
     let mut dhcp_config = DhcpConfig::default();
-    dhcp_config.hostname = Some(heapless::String::<32>::try_from("mypico2w").unwrap());
+    dhcp_config.hostname = Some(heapless::String::<32>::try_from("led-board").unwrap());
 
     let config = Config::dhcpv4(dhcp_config);
 
@@ -118,7 +118,7 @@ pub async fn init_wifi(
         info!("WIFI GOT SIGNAL");
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let task = mdns_task(stack, trng, "mypico2w".to_string(), ip);
+        let task = mdns_task(stack, trng, "led-board".to_string(), ip);
 
         match task {
             Ok(task) => {

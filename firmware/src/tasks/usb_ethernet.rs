@@ -169,7 +169,7 @@ pub async fn init_usb_ethernet(
         info!("WIFI GOT SIGNAL");
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let task = mdns_task(stack, trng, "mypico2w".to_string(), ip);
+        let task = mdns_task(stack, trng, "led-board".to_string(), ip);
 
         match task {
             Ok(task) => {

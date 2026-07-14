@@ -1,5 +1,4 @@
 use std::{thread::sleep, time::Duration};
-
 use tungstenite::{
     Bytes, ClientRequestBuilder, Message, Utf8Bytes, client::connect_with_config, connect, http::Uri,
     protocol::WebSocketConfig,
@@ -8,7 +7,7 @@ use tungstenite::{
 fn main() {
     env_logger::init();
 
-    // let url = "ws://mypico2w.local/api/ws";
+    // let url = "ws://led-board.local/api/ws";
     let url = "ws://192.168.7.10/api/ws";
 
     let builder = ClientRequestBuilder::new(Uri::from_static(url)).with_sub_protocol("json");

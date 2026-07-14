@@ -26,13 +26,29 @@ export function RemoteRoute(props: RouteSectionProps) {
   const onUpdatePlaylistAnimation = async (idx: number, animation: Animation) => {
     if (!playlist.latest) return;
 
-    if (JSON.stringify(playlist.latest[idx]) !== JSON.stringify([animation, 10_000])) {
+    if (JSON.stringify(playlist.latest[idx][0]) !== JSON.stringify(animation)) {
       const playlist_clone = structuredClone(playlist.latest);
 
-      playlist_clone[idx] = [animation, 10_000];
+      playlist_clone[idx] = [animation, playlist_clone[idx][1]];
 
       mutate(playlist_clone);
     }
+  };
+
+  const onUpdatePlaylistAnimationDuration = async (idx: number, duration: number) => {
+    if (!playlist.latest) return;
+
+    const playlist_clone = structuredClone(playlist.latest);
+
+    playlist_clone[idx] = [playlist_clone[idx][0], duration];
+
+    mutate(playlist_clone);
+  };
+
+  const onDeletePlaylistItem = async (idx: number) => {
+    if (!playlist.latest) return;
+
+    mutate(playlist.latest.filter((_, i) => i != idx));
   };
 
   const onSave = async () => {
@@ -66,7 +82,21 @@ export function RemoteRoute(props: RouteSectionProps) {
           <Card.Body>
             <div class="d-flex flex-column gap-2">
               <For each={playlist()}>
-                {(animation, idx) => <AnimationForm animation={animation[0]} onUpdate={(a) => onUpdatePlaylistAnimation(idx(), a)} />}
+                {(animation, idx) => (
+                  <div class="p-2 d-flex flex-column gap-2 border border-info rounded-2 bg-info-subtle">
+                    <AnimationForm animation={animation[0]} onUpdate={(a) => onUpdatePlaylistAnimation(idx(), a)} />
+                    <div class="d-flex gap-2 align-items-center">
+                      <span>Duration:</span>
+                      <input
+                        class="form-control"
+                        type="number"
+                        value={animation[1]}
+                        on:change={(e) => onUpdatePlaylistAnimationDuration(idx(), Number(e.currentTarget.value))}
+                      />
+                      <Button colour="danger" on:click={() => onDeletePlaylistItem(idx())}>Delete</Button>
+                    </div>
+                  </div>
+                )}
               </For>
             </div>
           </Card.Body>
@@ -106,6 +136,7 @@ export function AnimationForm(props: Props) {
     if (typeof value === "string") {
       return (
         <input
+          class="form-control"
           type="text"
           value={value}
           on:change={(e) => updateValue(e.currentTarget.value)}
@@ -114,6 +145,7 @@ export function AnimationForm(props: Props) {
     } else if (typeof value === "number") {
       return (
         <input
+          class="form-control"
           type="number"
           value={value}
           on:change={(e) => updateValue(Number(e.currentTarget.value))}
@@ -136,13 +168,13 @@ export function AnimationForm(props: Props) {
   const paramsForm = (params: AnimationParams, path: string[] = []) => {
     if (typeof params === "string" || typeof params === "number" || typeof params === "boolean") {
       return (
-        <div class="mb-2">
+        <div class="g-col-12">
           {primitiveForm(params, path)}
         </div>
       );
     } else if (Array.isArray(params)) {
       return (
-        <div>
+        <div class="grid gap-2">
           {params.map((param, index) => paramsForm(param, [...path, index.toString()]))}
         </div>
       );
@@ -169,9 +201,9 @@ export function AnimationForm(props: Props) {
     if (typeof _animation === "string") {
       // Handle top-level primitive (unlikely but possible)
       return (
-        <div>
+        <h3 class="mb-0">
           {_animation}
-        </div>
+        </h3>
       );
     } else if (typeof _animation === "object" && _animation !== null) {
       const keys = Object.keys(_animation);
@@ -184,8 +216,8 @@ export function AnimationForm(props: Props) {
           {keys.map((animationName) => {
             const params = _animation[animationName];
             return (
-              <div class="mb-2 p-2 border rounded">
-                <h3 class="font-bold">{animationName}</h3>
+              <div class="d-flex flex-column gap-2">
+                <h3 class="mb-0">{animationName}</h3>
                 {paramsForm(params, [animationName])}
               </div>
             );
@@ -204,7 +236,7 @@ export function AnimationForm(props: Props) {
   }
 
   return (
-    <div class="p-2 border">
+    <div class="p-2 d-flex flex-column gap-2 border border-primary rounded-2 bg-primary-subtle">
       {form()}
       {props.onSave && <Button colour="primary" on:click={async () => await props.onSave!(animation())}>Add</Button>}
     </div>

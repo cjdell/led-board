@@ -30,7 +30,7 @@ ota:
 
     transport=$(printf '%s\n' "defmt_rtt" "defmt_tcp" | fzf --prompt="Transport> " --height=~10 --header="Select logging transport")
     network=$(printf '%s\n' "wifi" "usb_ethernet" "ppp" | fzf --prompt="Network> " --height=~10 --header="Select network mode")
-    host=$(printf '%s\n' "mypico2w.local" "192.168.7.10" "192.168.1.1" | fzf --prompt="Host> " --height=~10 --header="Select host")
+    host=$(printf '%s\n' "led-board.local" "192.168.7.10" "192.168.1.1" | fzf --prompt="Host> " --height=~10 --header="Select host")
 
     echo "Building with features: ${transport},${network}"
     cargo objcopy --release -p firmware --features="${transport},${network}" --bin ws --target thumbv8m.main-none-eabihf -- -O binary tmp/ws.bin
@@ -43,7 +43,7 @@ attach_tcp:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    host=$(printf '%s\n' "mypico2w.local" "192.168.7.10" "192.168.1.1" | fzf --prompt="Host> " --height=~10 --header="Select host")
+    host=$(printf '%s\n' "led-board.local" "192.168.7.10" "192.168.1.1" | fzf --prompt="Host> " --height=~10 --header="Select host")
     
     defmt-print -e target/thumbv8m.main-none-eabihf/release/ws tcp --host $host
 
@@ -116,8 +116,8 @@ setup_flash:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    picotool partition create partitions.json partition_table.bin
-    picotool load --offset 0x10000000 partition_table.bin
+    picotool partition create partitions.json tmp/partition_table.bin
+    picotool load --offset 0x10000000 tmp/partition_table.bin
     picotool partition info
 
 upload_wifi_firmware:

@@ -30,12 +30,23 @@ where
 pub type BufferTargetRgb888 = BufferTarget<Rgb888>;
 pub type BufferTargetRgb565 = BufferTarget<Rgb565>;
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct AnimationParams {
     pub beat: u8,
     pub low: u8,
     pub med: u8,
     pub high: u8,
+}
+
+impl Default for AnimationParams {
+    fn default() -> Self {
+        Self {
+            beat: 255,
+            low: Default::default(),
+            med: Default::default(),
+            high: Default::default(),
+        }
+    }
 }
 
 impl AnimationParams {
