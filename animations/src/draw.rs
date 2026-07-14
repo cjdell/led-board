@@ -1,5 +1,6 @@
 use crate::common::{BufferTargetRgb888, HEIGHT, WIDTH};
 use embedded_graphics::pixelcolor::Rgb888;
+use micromath::F32Ext;
 
 // Simple Bresenham line drawing (for wireframe edges)
 pub fn draw_line(x0: i32, y0: i32, x1: i32, y1: i32, color: Rgb888, target: &mut BufferTargetRgb888) {
