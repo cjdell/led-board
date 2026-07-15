@@ -29,7 +29,7 @@ fn main() {
     let mut buffer_1 = BufferTarget::new();
     let mut buffer_2 = BufferTarget::new();
 
-    let mut runner = AnimationRunner::new();
+    let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
     let mut start_time = time::SystemTime::now();
     let mut last_time = time::SystemTime::now();
 

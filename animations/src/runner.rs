@@ -25,8 +25,7 @@ pub struct AnimationRunner {
 }
 
 impl AnimationRunner {
-    pub fn new() -> Self {
-        let mut playlist = Playlist::new();
+    pub fn new(mut playlist: Playlist) -> Self {
         let animation = playlist.get_next_animation();
         let fader = AnimationFader::new(animation.0.clone());
         let params_buffer = HeapRb::<AnimationParams>::new(200);
@@ -66,8 +65,8 @@ impl AnimationRunner {
         self.fader.set_override_animation(animation);
     }
 
-    pub fn update_playlist(&mut self, playlist_data: Vec<(AnimationEnum, u32)>) {
-        self.playlist.update(playlist_data);
+    pub fn update_playlist(&mut self, playlist: Playlist) {
+        self.playlist = playlist;
         self.next();
     }
 

@@ -5,9 +5,10 @@
 
 extern crate alloc;
 
+use alloc::vec;
 use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
 use animations::{
-    AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, TOTAL_PIXELS, apply_power_limit, playlist,
+    AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS, apply_power_limit, playlist,
 };
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use defmt::*;
@@ -366,6 +367,8 @@ async fn main(spawner: Spawner) {
                     if let Err(err) = local_fs.delete_file(DEFAULT_PLAYLIST_FILENAME).await {
                         error!("Could not delete playlist JSON: {}", defmt::Debug2Format(&err));
                     }
+
+                    display_worker_sender.send(DisplayWorkerMessage::Playlist(vec![])).await;
                 }
                 WebSocketIncomingMessage::ParamsBuffer(bytes) => {
                     let params_buffer = bytes
@@ -414,7 +417,7 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
     let mut buffer_1 = BufferTarget::new();
     let mut buffer_2 = BufferTarget::new();
 
-    let mut runner = AnimationRunner::new();
+    let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
     let mut last_time = embassy_time::Instant::now();
 
     let mut power_limit = 0.1f32;
@@ -438,7 +441,11 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
                 }
                 DisplayWorkerMessage::Playlist(playlist_data) => {
                     info!("Update playlist");
-                    runner.update_playlist(playlist_data);
+                    if playlist_data.len() > 0 {
+                        runner.update_playlist(Playlist::new(playlist_data));
+                    } else {
+                        runner.update_playlist(Playlist::new(Playlist::get_default_playlist_data()));
+                    }
                 }
                 DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
                 DisplayWorkerMessage::ParamsBuffer(params_buffer) => {
