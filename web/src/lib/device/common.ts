@@ -68,7 +68,9 @@ export interface PlaylistMessage {
   Playlist: { playlist: Playlist; save: boolean };
 }
 
-export type DeviceMessage = AnimationMessage | PlaylistMessage;
+export type ResetMessage = "Reset";
+
+export type DeviceMessage = AnimationMessage | PlaylistMessage | ResetMessage;
 
 export type FrameBufferListener = (buffer: Uint8Array) => void;
 
@@ -87,6 +89,7 @@ export interface DeviceApi {
   getPlaylist(): Promise<Playlist>;
 
   sendMessage(message: DeviceMessage): Promise<void>;
+  sendBinary(buffer: Uint8Array): Promise<void>;
   sendFile(buffer: Uint8Array): Promise<void>;
 
   listFiles(): Promise<readonly DeviceFile[]>;

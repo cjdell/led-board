@@ -9,11 +9,11 @@ export * from "./dummy.ts";
 export function getDeviceApi(): DeviceApi {
   const { hostname } = globalThis.location;
 
+  // return new RealDeviceApi("http://led-board.local");
+
   if (hostname === "127.0.0.1" || hostname === "localhost" || hostname === "demo.rustagon.chrisdell.info") {
     return new DummyDeviceApi();
   } else {
     return new RealDeviceApi();
   }
-
-  // return new RealDeviceApi("led-board.local");
 }

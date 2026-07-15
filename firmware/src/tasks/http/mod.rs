@@ -66,6 +66,7 @@ impl AppBuilder for AppProps {
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
             .route("/remote", get(async |_: RequestInfo| html_app_response()))
+            .route("/grid", get(async |_: RequestInfo| html_app_response()))
             .route("/config", get(async |_: RequestInfo| html_app_response()))
             .nest(
                 "/api",
@@ -113,7 +114,7 @@ impl AppBuilder for AppProps {
     }
 }
 
-const WEB_TASK_POOL_SIZE: usize = 4;
+const WEB_TASK_POOL_SIZE: usize = 5;
 
 static CONFIG: picoserve::Config = picoserve::Config::new(picoserve::Timeouts {
     start_read_request: picoserve::time::Duration::from_secs(300),

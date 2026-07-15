@@ -35,9 +35,14 @@ ota:
     echo "Building with features: ${transport},${network}"
     cargo objcopy --release -p firmware --features="${transport},${network}" --bin ws --target thumbv8m.main-none-eabihf -- -O binary tmp/ws.bin
 
+    cp target/thumbv8m.main-none-eabihf/release/ws tmp/ws.elf
+
     sum=$(sha256sum tmp/ws.bin | awk "{print \$1}")
 
     curl -# -X POST --data-binary @tmp/ws.bin "http://$host/api/ota?$sum"
+
+attach_rtt:
+    probe-rs attach --chip RP235x tmp/ws.elf
 
 attach_tcp:
     #!/usr/bin/env bash

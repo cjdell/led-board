@@ -2,7 +2,10 @@ use animations::{
     AnimationEnum, AnimationFader, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS,
     apply_power_limit,
 };
-use embedded_graphics::pixelcolor::{IntoStorage, Rgb888, RgbColor as _};
+use embedded_graphics::{
+    draw_target::DrawTarget,
+    pixelcolor::{IntoStorage, Rgb888, RgbColor as _},
+};
 use minifb::{
     Key::{self, M},
     Scale, Window, WindowOptions,
@@ -88,6 +91,14 @@ fn main() {
                     )),
                     4_500,
                 );
+            }
+
+            if window.is_key_down(Key::P) {
+                key_down_time = Some(now);
+
+                runner.set_suspend(3_000);
+
+                buffer_1.clear(Rgb888::YELLOW);
             }
 
             if window.is_key_down(Key::P) {

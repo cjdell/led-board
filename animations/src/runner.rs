@@ -15,8 +15,9 @@ pub struct AnimationRunner {
     playlist: Playlist,
     fader: AnimationFader,
 
-    current_animation: (Box<dyn Animation>, u32, u32),
-    override_animation: Option<(Box<dyn Animation>, u32, u32)>,
+    current_animation: (u32, u32),
+    override_animation: Option<(u32, u32)>,
+    suspend: u32,
 
     params_buffer: HeapRb<AnimationParams>,
     dropped: i32,
@@ -33,8 +34,9 @@ impl AnimationRunner {
         Self {
             playlist,
             fader,
-            current_animation: (animation.0, 0, animation.1),
+            current_animation: (0, animation.1),
             override_animation: None,
+            suspend: 0,
             params_buffer,
             dropped: 0,
             rem: 0,
@@ -50,33 +52,23 @@ impl AnimationRunner {
     }
 
     pub fn next(&mut self) {
-        if self.override_animation.is_some() {
-            return;
-        }
-
         let next_animation = self.playlist.get_next_animation();
 
         #[cfg(feature = "defmt")]
         defmt::info!("Next Animation");
 
-        self.current_animation = (next_animation.0, 0, next_animation.1);
-        self.fader.switch_to(self.current_animation.0.clone(), 0, 1.0);
+        self.current_animation = (0, next_animation.1);
+        self.fader.switch_to(next_animation.0);
     }
 
     pub fn set_override_animation(&mut self, animation: Box<dyn Animation>, run_time: u32) {
-        self.override_animation = Some((animation.clone(), 0, run_time));
-        self.fader.switch_to(animation, 0, 0.95);
+        self.override_animation = Some((0, run_time));
+        self.fader.set_override_animation(animation);
     }
 
     pub fn update_playlist(&mut self, playlist_data: Vec<(AnimationEnum, u32)>) {
         self.playlist.update(playlist_data);
         self.next();
-    }
-
-    fn restore_animation(&mut self) {
-        self.override_animation = None;
-        self.fader
-            .switch_to(self.current_animation.0.clone(), self.current_animation.1, 1.0);
     }
 
     pub fn push_params(&mut self, params: AnimationParams) {
@@ -88,18 +80,31 @@ impl AnimationRunner {
         self.params_buffer.try_push(params).unwrap();
     }
 
-    pub fn update(&mut self, delta_ms: u32, buffer_1: &mut Buffer, buffer_2: &mut Buffer) {
-        if let Some(ref mut override_animation) = self.override_animation {
-            override_animation.1 += delta_ms;
+    pub fn set_suspend(&mut self, ms: u32) {
+        self.suspend = ms;
+    }
 
-            if override_animation.1 > override_animation.2 {
-                self.current_animation.1 += override_animation.2;
-                self.restore_animation();
+    pub fn update(&mut self, delta_ms: u32, buffer_1: &mut Buffer, buffer_2: &mut Buffer) {
+        if self.suspend > 0 {
+            self.suspend = self.suspend.saturating_sub(delta_ms);
+
+            #[cfg(feature = "std")]
+            std::println!("Suspending: {}", self.suspend);
+
+            return;
+        }
+
+        if let Some(ref mut override_animation) = self.override_animation {
+            override_animation.0 += delta_ms;
+
+            if override_animation.0 > override_animation.1 {
+                self.override_animation = None;
+                self.fader.clear_override_animation();
             }
         } else {
-            self.current_animation.1 += delta_ms;
+            self.current_animation.0 += delta_ms;
 
-            if self.current_animation.1 > self.current_animation.2 {
+            if self.current_animation.0 > self.current_animation.1 {
                 self.next();
             }
         }

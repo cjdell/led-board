@@ -23,6 +23,10 @@ export function RemoteRoute(props: RouteSectionProps) {
     mutate([...playlist.latest, [animation, 10_000]]);
   };
 
+  const onPreview = async (animation: Animation) => {
+    api.sendMessage({ Animation: [animation, 5_000] });
+  };
+
   const onUpdatePlaylistAnimation = async (idx: number, animation: Animation) => {
     if (!playlist.latest) return;
 
@@ -51,10 +55,20 @@ export function RemoteRoute(props: RouteSectionProps) {
     mutate(playlist.latest.filter((_, i) => i != idx));
   };
 
-  const onSave = async () => {
+  const onRun = async () => {
     if (!playlist.latest) return;
 
     await api.sendMessage({ Playlist: { playlist: playlist.latest, save: false } });
+  };
+
+  const onSave = async () => {
+    if (!playlist.latest) return;
+
+    await api.sendMessage({ Playlist: { playlist: playlist.latest, save: true } });
+  };
+
+  const onReset = async () => {
+    await api.sendMessage("Reset");
   };
 
   return (
@@ -68,7 +82,7 @@ export function RemoteRoute(props: RouteSectionProps) {
                 {(animation) => (
                   <div>
                     {/* {JSON.stringify(animation)} */}
-                    <AnimationForm animation={animation} onSave={onAddAnimation} />
+                    <AnimationForm animation={animation} onSave={onAddAnimation} onPreview={onPreview} />
                   </div>
                 )}
               </For>
@@ -101,7 +115,9 @@ export function RemoteRoute(props: RouteSectionProps) {
             </div>
           </Card.Body>
           <Card.Footer>
+            <Button colour="info" on:click={() => onRun()}>Run</Button>
             <Button colour="primary" on:click={() => onSave()}>Save</Button>
+            <Button colour="danger" on:click={() => onReset()}>Reset</Button>
           </Card.Footer>
         </Card>
       </div>
@@ -113,6 +129,7 @@ interface Props {
   animation: Animation;
   onSave?: (animation: Animation) => Promise<void>;
   onUpdate?: (animation: Animation) => Promise<void>;
+  onPreview?: (animation: Animation) => Promise<void>;
 }
 
 export function AnimationForm(props: Props) {
@@ -238,7 +255,12 @@ export function AnimationForm(props: Props) {
   return (
     <div class="p-2 d-flex flex-column gap-2 border border-primary rounded-2 bg-primary-subtle">
       {form()}
-      {props.onSave && <Button colour="primary" on:click={async () => await props.onSave!(animation())}>Add</Button>}
+      {props.onSave && props.onPreview && (
+        <div class="d-flex gap-2 flex-row-reverse">
+          {props.onSave && <Button colour="primary" on:click={async () => await props.onSave!(animation())}>Add</Button>}
+          {props.onPreview && <Button colour="info" on:click={async () => await props.onPreview!(animation())}>Preview</Button>}
+        </div>
+      )}
     </div>
   );
 }

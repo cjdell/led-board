@@ -97,6 +97,15 @@ export class RealDeviceApi implements DeviceApi {
     this.ws.send(JSON.stringify(message));
   }
 
+  public async sendBinary(buffer: Uint8Array) {
+    while (this.ws?.readyState !== WebSocket.OPEN) {
+      await sleep(1000);
+      console.warn("Waiting for WebSocket...", this.ws);
+    }
+
+    this.ws.send(buffer);
+  }
+
   public async sendFile(bytes: Uint8Array<ArrayBuffer>) {
     await fetch(`${this.baseUrl}receive`, {
       method: "POST",

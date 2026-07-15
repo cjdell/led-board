@@ -6,7 +6,9 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
-use animations::{AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, apply_power_limit, playlist};
+use animations::{
+    AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, TOTAL_PIXELS, apply_power_limit, playlist,
+};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use defmt::*;
 use embassy_executor::{Executor, Spawner};
@@ -66,8 +68,11 @@ use panic_probe as _;
 #[used]
 pub static IMAGE_DEF: Block<3> = Block::new([
     {
-        let value =
-            IMAGE_TYPE_EXE | IMAGE_TYPE_EXE_CHIP_RP2350 | IMAGE_TYPE_EXE_CPU_ARM | IMAGE_TYPE_EXE_TYPE_SECURITY_S;
+        let value = IMAGE_TYPE_EXE
+            | IMAGE_TYPE_EXE_CHIP_RP2350
+            | IMAGE_TYPE_EXE_CPU_ARM
+            | IMAGE_TYPE_EXE_TYPE_SECURITY_S
+            | IMAGE_TYPE_TBYB;
 
         item_generic_1bs(value, 1, ITEM_1BS_IMAGE_TYPE)
     },
@@ -119,16 +124,6 @@ async fn main(spawner: Spawner) {
 
     // let mut p = embassy_rp::init(config);
 
-    let mut watchdog = Watchdog::new(p.WATCHDOG);
-
-    info!("Reset Reason: {:?}", defmt::Debug2Format(&watchdog.reset_reason()));
-
-    watchdog.start(Duration::from_secs(15));
-
-    let watchdog: SharedWatchdog = Arc::new(RwLock::new(watchdog));
-
-    Timer::after(Duration::from_millis(1_000)).await;
-
     let pio = p.PIO1;
     let dma = p.DMA_CH2;
 
@@ -165,7 +160,16 @@ async fn main(spawner: Spawner) {
         },
     );
 
-    info!("Init");
+    info!("Init!");
+
+    Timer::after(Duration::from_millis(1_000)).await;
+
+    rp235x_ota::mark_firmware_good();
+
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    info!("Reset Reason: {:?}", defmt::Debug2Format(&watchdog.reset_reason()));
+    watchdog.start(Duration::from_secs(15));
+    let watchdog: SharedWatchdog = Arc::new(RwLock::new(watchdog));
 
     let cs = Output::new(p.PIN_25, Level::High);
     let mut pio = Pio::new(p.PIO0, Irqs);
@@ -320,26 +324,19 @@ async fn main(spawner: Spawner) {
                 WebSocketIncomingMessage::FrameBuffer(items) => {
                     // *last_write.write().await = embassy_time::Instant::now();
 
-                    // let mut full_buffer: Vec<RGB8> = Vec::new();
+                    let mut full_buffer: Vec<RGB8> = Vec::new();
 
-                    // full_buffer.resize(TOTAL_PIXELS, RGB8::default());
+                    full_buffer.resize(TOTAL_PIXELS, RGB8::default());
 
-                    // let pixels = items
-                    //     .into_chunks::<3>()
-                    //     .into_iter()
-                    //     .map(|chunk| RGB8::new(chunk[0], chunk[1], chunk[2]))
-                    //     .collect::<Vec<RGB8>>();
+                    let pixels = items
+                        .into_chunks::<3>()
+                        .into_iter()
+                        .map(|chunk| Rgb888::new(chunk[0], chunk[1], chunk[2]))
+                        .collect::<Vec<Rgb888>>();
 
-                    // let mut i = 0;
-
-                    // for pixel in pixels {
-                    //     full_buffer[i] = pixel;
-                    //     i += 1;
-                    // }
-
-                    // let mut led_screen = led_screen.write().await;
-                    // led_screen.copy_buffer(full_buffer);
-                    // led_screen.flush().await;
+                    display_worker_sender
+                        .send(DisplayWorkerMessage::FrameBuffer(pixels))
+                        .await;
                 }
                 WebSocketIncomingMessage::Next => {
                     display_worker_sender.send(DisplayWorkerMessage::Next).await;
@@ -364,6 +361,11 @@ async fn main(spawner: Spawner) {
                     display_worker_sender
                         .send(DisplayWorkerMessage::Playlist(playlist))
                         .await;
+                }
+                WebSocketIncomingMessage::Reset => {
+                    if let Err(err) = local_fs.delete_file(DEFAULT_PLAYLIST_FILENAME).await {
+                        error!("Could not delete playlist JSON: {}", defmt::Debug2Format(&err));
+                    }
                 }
                 WebSocketIncomingMessage::ParamsBuffer(bytes) => {
                     let params_buffer = bytes
@@ -438,13 +440,21 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
                     info!("Update playlist");
                     runner.update_playlist(playlist_data);
                 }
+                DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
                 DisplayWorkerMessage::ParamsBuffer(params_buffer) => {
                     info!("Params Buffer");
                     for params in params_buffer {
                         runner.push_params(params);
                     }
                 }
-                DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
+                DisplayWorkerMessage::FrameBuffer(pixels) => {
+                    runner.set_suspend(10_000);
+                    let mut i = 0;
+                    for pixel in pixels {
+                        buffer_1.buffer[i] = pixel;
+                        i += 1;
+                    }
+                }
             }
         }
 
@@ -472,19 +482,21 @@ async fn watchdog_runner(
     let delay = Duration::from_millis(5_000);
     let blink = Duration::from_millis(100);
 
-    rp235x_ota::mark_firmware_good();
-
     loop {
         Timer::after(delay).await;
 
-        let time_since_last_activity = embassy_time::Instant::now().as_millis() - activity_watch.get().await;
+        // let time_since_last_activity = embassy_time::Instant::now().as_millis() - activity_watch.get().await;
 
-        info!("time_since_last_activity: {}ms", time_since_last_activity);
+        // info!("time_since_last_activity: {}ms", time_since_last_activity);
 
-        if time_since_last_activity < 60_000 {
-            if let Ok(mut watchdog) = watchdog.try_write() {
-                watchdog.feed(Duration::from_millis(15_000));
-            }
+        // if time_since_last_activity < 60_000 {
+        //     if let Ok(mut watchdog) = watchdog.try_write() {
+        //         watchdog.feed(Duration::from_millis(15_000));
+        //     }
+        // }
+
+        if let Ok(mut watchdog) = watchdog.try_write() {
+            watchdog.feed(Duration::from_millis(15_000));
         }
 
         wifi_control.set_led(true).await;

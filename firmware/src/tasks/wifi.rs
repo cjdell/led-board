@@ -88,7 +88,7 @@ pub async fn init_wifi(
 
     let config = Config::dhcpv4(dhcp_config);
 
-    static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(net_device, config, RESOURCES.init(StackResources::new()), seed);
 
     spawner.spawn(net_task(runner).unwrap());

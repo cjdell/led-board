@@ -8,10 +8,8 @@ use alloc::{format, string::String};
 use block_device::BlockDevice;
 use core::fmt::Debug;
 use defmt::info;
-use embassy_rp::{
-    block::Partition,
-    rom_data::{explicit_buy, get_uf2_target_partition, reboot},
-};
+use embassy_rp::block::Partition;
+use embassy_rp::rom_data;
 use sha2::{Digest, Sha256};
 
 const REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE: u32 = 0x4;
@@ -23,11 +21,65 @@ const FLASH_BASE: u32 = 0x10000000;
 const FLASH_SIZE: usize = 4 * 1024 * 1024;
 const BLOCK_SIZE: usize = 4 * 1024;
 
+const SYS_INFO_BOOT_INFO: u32 = 0x0040;
+const BOOT_TBYB_AND_UPDATE_FLAG_BUY_PENDING: u8 = 0x1;
+const BOOT_TYPE_FLASH_UPDATE: u8 = 0x4;
+
 pub fn mark_firmware_good() {
+    info!("Rp235xOta: mark_firmware_good()");
+
     let mut workarea = [0u8; 4096];
-    info!("Rp235xOta: Marking this firmware as good...");
-    unsafe { explicit_buy(workarea.as_mut_ptr(), workarea.len() as u32) };
+
+    let mut sys_info_buffer = [0u32; 5];
+
+    let get_sys_info_result = unsafe { rom_data::get_sys_info(sys_info_buffer.as_mut_ptr(), 5, SYS_INFO_BOOT_INFO) };
+    info!("Rp235xOta: get_sys_info: {}", get_sys_info_result);
+    info!("Rp235xOta: sys_info_buffer: {}", sys_info_buffer);
+
+    let boot_type = ((sys_info_buffer[1] & 0x0000FF00) >> 8) as u8;
+
+    if boot_type & BOOT_TYPE_FLASH_UPDATE > 0 {
+        info!("Rp235xOta: Marking this firmware as good...");
+
+        let buy_result = unsafe { rom_data::explicit_buy(workarea.as_mut_ptr(), workarea.len() as u32) };
+        info!("Rp235xOta: buy_result: {}", buy_result);
+    } else {
+        info!("Rp235xOta: Not a flash update, ignoring...");
+    }
 }
+
+// 1.038942 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 1.038965 [INFO ] Rp235xOta: sys_info_buffer: [64, 255, 0, 0, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)
+// 1.039007 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 1.077197 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 1.077219 [INFO ] Rp235xOta: sys_info_buffer: [64, 67175679, 0, 268959744, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)   0x040104FF 0x0 0x10080000 0x0
+// 1.077280 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 0.077014 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 0.077038 [INFO ] Rp235xOta: sys_info_buffer: [64, 1279, 0, 268439552, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)   0x000004FF 0x0 0x10001000 0x0
+// 0.077078 [INFO ] Rp235xOta: Marking this firmware as good... (rp235x_ota rp235x_ota/src/lib.rs:28)
+// 0.077099 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 0.077287 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 0.077310 [INFO ] Rp235xOta: sys_info_buffer: [64, 67175679, 0, 268959744, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)
+// 0.077351 [INFO ] Rp235xOta: Marking this firmware as good... (rp235x_ota rp235x_ota/src/lib.rs:28)
+// 0.077371 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 1.288594 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 1.289059 [INFO ] Rp235xOta: sys_info_buffer: [64, 1279, 0, 268439552, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)
+// 1.289554 [INFO ] Rp235xOta: Marking this firmware as good... (rp235x_ota rp235x_ota/src/lib.rs:28)
+// 1.289793 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 0.000000 [INFO ] Rp235xOta: get_sys_info: 5 (rp235x_ota rp235x_ota/src/lib.rs:33)
+// 0.000000 [INFO ] Rp235xOta: sys_info_buffer: [64, 254, 852821, 0, 0] (rp235x_ota rp235x_ota/src/lib.rs:34)       // 0x000000FE 0x000D0355 0x0 0x0
+// 0.000000 [INFO ] Rp235xOta: Marking this firmware as good... (rp235x_ota rp235x_ota/src/lib.rs:28)
+// 0.000000 [INFO ] Rp235xOta: buy_result: 0 (rp235x_ota rp235x_ota/src/lib.rs:37)
+
+// 1.077039 [INFO ] Rp235xOta: sys_info_buffer: 5 (rp235x_ota rp235x_ota/src/lib.rs:34)
+// 1.077062 [INFO ] Rp235xOta: sys_info_buffer: [64, 67175678, 852821, 268959744, 0] (utils src/config/mod.rs:85)   // 0x040104FE
+// 1.077111 [INFO ] Rp235xOta: Marking this firmware as good... (rp235x_ota rp235x_ota/src/lib.rs:28)
+// 1.077132 [INFO ] Rp235xOta: get_sys_info: 0 (rp235x_ota rp235x_ota/src/lib.rs:33)
 
 #[derive(Debug)]
 pub enum OtaError {
@@ -74,7 +126,9 @@ where
 
         let part_ptr: *mut u32 = &mut partition_out as *mut u32;
 
-        let result = unsafe { get_uf2_target_partition(workarea.as_mut_ptr(), workarea.len(), RP2350_ARM_S, part_ptr) };
+        let result = unsafe {
+            rom_data::get_uf2_target_partition(workarea.as_mut_ptr(), workarea.len(), RP2350_ARM_S, part_ptr)
+        };
 
         if result == 0xFF {
             return Err(OtaError::TargetPartitionNotFound);
@@ -179,7 +233,7 @@ where
 
             // self.watchdog.try_write().unwrap().stop();
 
-            reboot(
+            rom_data::reboot(
                 REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE,
                 1_000,
                 FLASH_BASE + self.start_addr,

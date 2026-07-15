@@ -5,6 +5,7 @@ import "./App.scss";
 import { NavBar } from "./components/NavBar/index.tsx";
 import { ConfigRoute } from "./routes/config.tsx";
 import { FilesRoute } from "./routes/files.tsx";
+import { GridRoute } from "./routes/grid.tsx";
 import { IndexRoute } from "./routes/index.tsx";
 import { RemoteRoute } from "./routes/remote.tsx";
 import { WifiRoute } from "./routes/wifi.tsx";
@@ -22,20 +23,25 @@ const Routes: readonly RouteDefinition[] = [
     component: RemoteRoute,
   },
   {
-    label: "Files",
-    path: "/fs",
-    component: FilesRoute,
+    label: "Grid",
+    path: "/grid",
+    component: GridRoute,
   },
+  // {
+  //   label: "Files",
+  //   path: "/fs",
+  //   component: FilesRoute,
+  // },
   {
     label: "Config",
     path: "/config",
     component: ConfigRoute,
   },
-  {
-    label: "WiFi",
-    path: "/wifi",
-    component: WifiRoute,
-  },
+  // {
+  //   label: "WiFi",
+  //   path: "/wifi",
+  //   component: WifiRoute,
+  // },
 ];
 
 export function App() {

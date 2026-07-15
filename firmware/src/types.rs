@@ -9,6 +9,7 @@ use embassy_sync::{
     rwlock::RwLock,
     watch::{self, Watch},
 };
+use embedded_graphics::pixelcolor::Rgb888;
 use serde::{Deserialize, Serialize};
 use utils::config::{ConfigFile, storage::LocalFsConfigFileStorage};
 
@@ -31,6 +32,7 @@ pub enum WebSocketIncomingMessage {
         playlist: Vec<(AnimationEnum, u32)>,
         save: bool,
     },
+    Reset,
     ParamsBuffer(Vec<u8>),
     PowerLimit(f32),
 }
@@ -44,8 +46,9 @@ pub enum DisplayWorkerMessage {
     Next,
     Animation(AnimationEnum, u32),
     Playlist(Vec<(AnimationEnum, u32)>),
-    ParamsBuffer(Vec<AnimationParams>),
     PowerLimit(f32),
+    ParamsBuffer(Vec<AnimationParams>),
+    FrameBuffer(Vec<Rgb888>),
 }
 
 pub type DisplayWorkerChannel = Channel<CriticalSectionRawMutex, DisplayWorkerMessage, 1>;

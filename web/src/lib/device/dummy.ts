@@ -75,6 +75,10 @@ export class DummyDeviceApi implements DeviceApi {
     console.log("DummyDeviceApi.sendMessage:", message);
   }
 
+  public async sendBinary(buffer: Uint8Array) {
+    console.log("DummyDeviceApi.sendBinary:", buffer);
+  }
+
   public async sendFile(bytes: Uint8Array<ArrayBuffer>) {
     console.log("DummyDeviceApi.sendFile:", bytes.length);
   }

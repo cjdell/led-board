@@ -25,6 +25,7 @@ pub trait LocalFsTrait: Clone {
     ) -> impl Future<Output = Result<(), FsError>>;
     fn read_text_file(&self, file_name: &str) -> impl Future<Output = Result<String, FsError>>;
     fn write_text_file(&self, file_name: &str, text: String) -> impl Future<Output = Result<(), FsError>>;
+    fn delete_file(&self, file_name: &str) -> impl Future<Output = Result<(), FsError>>;
 }
 
 pub struct LocalFs<STORAGE: Storage> {
@@ -131,6 +132,14 @@ impl<STORAGE: Storage> LocalFsTrait for LocalFs<STORAGE> {
         let buf = text.as_bytes();
 
         self.write_binary_chunk(file_name, 0, &buf, true).await?;
+
+        Ok(())
+    }
+
+    async fn delete_file(&self, file_name: &str) -> Result<(), FsError> {
+        let fs: &Filesystem<STORAGE> = &*self.fs.lock().await;
+
+        fs.remove(file_name).map_err(|err| FsError::OpenError(err))?;
 
         Ok(())
     }

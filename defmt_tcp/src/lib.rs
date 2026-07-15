@@ -52,7 +52,7 @@ unsafe impl defmt::Logger for TcpLogger {
 pub static TCP_SENDER: TcpSender = TcpSender::new();
 
 pub struct TcpSender {
-    channel: Channel<CriticalSectionRawMutex, Vec<u8>, 10000>,
+    channel: Channel<CriticalSectionRawMutex, Vec<u8>, 2000>,
     encoder: RwLock<CriticalSectionRawMutex, Encoder>,
 }
 
