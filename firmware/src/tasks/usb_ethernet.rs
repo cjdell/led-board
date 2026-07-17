@@ -143,7 +143,7 @@ pub async fn init_usb_ethernet(
     let config = embassy_net::Config::default();
 
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(usb_ethernet_device, config, RESOURCES.init(StackResources::new()), seed);
 
     spawner.spawn(unwrap!(net_task(runner)));
