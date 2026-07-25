@@ -15,6 +15,7 @@ use defmt::*;
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join;
 use embassy_net::Stack;
+use embassy_rp::rom_data;
 use embassy_rp::{
     bind_interrupts,
     block::*,
@@ -110,7 +111,7 @@ async fn main(spawner: Spawner) {
 
     // Initialize the allocator BEFORE you use it
     unsafe {
-        embedded_alloc::init!(HEAP, 160 * 1024);
+        embedded_alloc::init!(HEAP, 192 * 1024);
     }
 
     let mut p = embassy_rp::init(Default::default());
@@ -169,7 +170,7 @@ async fn main(spawner: Spawner) {
 
     let mut watchdog = Watchdog::new(p.WATCHDOG);
     info!("Reset Reason: {:?}", defmt::Debug2Format(&watchdog.reset_reason()));
-    watchdog.start(Duration::from_secs(15));
+    // watchdog.start(Duration::from_secs(15));
     let watchdog: SharedWatchdog = Arc::new(RwLock::new(watchdog));
 
     let cs = Output::new(p.PIN_25, Level::High);
@@ -393,9 +394,20 @@ async fn main(spawner: Spawner) {
     let animation_fut = async {
         loop {
             if is_bootsel_pressed(p.BOOTSEL.reborrow()) {
-                display_worker_sender.send(DisplayWorkerMessage::Next).await;
+                Timer::after(Duration::from_secs(1)).await;
+
+                warn!("Reboot button pressed!");
 
                 Timer::after(Duration::from_secs(1)).await;
+
+                // display_worker_sender.send(DisplayWorkerMessage::Next).await;
+
+                // Timer::after(Duration::from_secs(1)).await;
+
+                const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
+                const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x0100;
+
+                rom_data::reboot(REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
             }
 
             Timer::after(Duration::from_millis(100)).await;

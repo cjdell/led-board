@@ -39,6 +39,8 @@ ota:
 
     sum=$(sha256sum tmp/ws.bin | awk "{print \$1}")
 
+    echo "Uploading..."
+
     curl -# -X POST --data-binary @tmp/ws.bin "http://$host/api/ota?$sum"
 
 attach_rtt:

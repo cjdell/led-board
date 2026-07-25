@@ -100,7 +100,7 @@ impl TcpSender {
     }
 
     pub async fn runner(&self, stack: Stack<'static>) {
-        let mut rx_buffer = [0; 4096];
+        let mut rx_buffer = [0; 128];
         let mut tx_buffer = [0; 4096];
 
         loop {
