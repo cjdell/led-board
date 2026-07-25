@@ -3,10 +3,10 @@ resolver = "2"
 members = [
     "animations",
     "defmt_tcp",
+    "embedded_tools",
     "firmware",
     "rp235x_ota",
     "sim",
-    "utils",
     "ws_client",
 ]
 

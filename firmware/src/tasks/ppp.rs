@@ -26,8 +26,8 @@ use embassy_usb::{
     driver::EndpointError,
 };
 use embedded_io_async::Read;
+use embedded_tools::sleep;
 use static_cell::StaticCell;
-use utils::sleep;
 
 const RAW_FLASH_BASE: u32 = 0x1c000000; // See XIP_NOCACHE_NOALLOC_NOTRANSLATE_BASE
 const WIFI_FIRMWARE_FLASH_OFFSET: u32 = 0x00200000;

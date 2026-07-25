@@ -35,6 +35,10 @@ use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap as Heap;
 use embedded_graphics::pixelcolor::Rgb888;
+use embedded_tools::{
+    config::{ConfigFile, storage::LocalFsConfigFileStorage},
+    local_fs::{LocalFs, LocalFsTrait as _},
+};
 use firmware::{
     config::{DEFAULT_PLAYLIST_FILENAME, LedBoardConfig},
     flash::{FlashStorage, LittleFsFlashStorage},
@@ -49,10 +53,6 @@ use firmware::{
 };
 use smart_leds::RGB8;
 use static_cell::StaticCell;
-use utils::{
-    config::{ConfigFile, storage::LocalFsConfigFileStorage},
-    local_fs::{LocalFs, LocalFsTrait as _},
-};
 
 #[cfg(feature = "defmt_tcp")]
 use defmt_tcp;

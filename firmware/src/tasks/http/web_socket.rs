@@ -2,11 +2,11 @@ use crate::types::*;
 use alloc::vec::Vec;
 use animations::TOTAL_PIXELS;
 use defmt::*;
+use embedded_tools::sleep;
 use picoserve::{
     futures::Either,
     response::ws::{Message, SocketRx, SocketTx, WebSocketCallback},
 };
-use utils::sleep;
 
 pub struct WebSocketHandler {
     web_socket_incoming_sender: WebSocketIncomingSender,

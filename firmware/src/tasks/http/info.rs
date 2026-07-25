@@ -1,5 +1,6 @@
 use crate::{config::DEFAULT_PLAYLIST_FILENAME, types::*};
 use animations::Playlist;
+use embedded_tools::local_fs::LocalFsTrait as _;
 use picoserve::{
     ResponseSent,
     io::Read,
@@ -7,7 +8,6 @@ use picoserve::{
     response::{IntoResponse, ResponseWriter},
     routing::RequestHandlerService,
 };
-use utils::local_fs::LocalFsTrait as _;
 
 pub struct GetAnimationsHandler {}
 

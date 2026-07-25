@@ -10,8 +10,8 @@ use embassy_sync::{
     watch::{self, Watch},
 };
 use embedded_graphics::pixelcolor::Rgb888;
+use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
 use serde::{Deserialize, Serialize};
-use utils::config::{ConfigFile, storage::LocalFsConfigFileStorage};
 
 #[derive(Debug, Clone)]
 pub enum EthernetSignalMessage {
@@ -60,6 +60,6 @@ pub type ActivityWatchReceiver = watch::Receiver<'static, CriticalSectionRawMute
 
 pub type SharedWatchdog = Arc<RwLock<CriticalSectionRawMutex, Watchdog>>;
 
-pub type LocalFs = utils::local_fs::LocalFs<LittleFsFlashStorage>;
+pub type LocalFs = embedded_tools::local_fs::LocalFs<LittleFsFlashStorage>;
 
 pub type LedBoardConfigFile = ConfigFile<LedBoardConfig, LocalFsConfigFileStorage<LocalFs>>;

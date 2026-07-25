@@ -18,7 +18,7 @@ animations = { path = "../animations", features = [
 ] }
 defmt-tcp = { path = "../defmt_tcp" }
 rp235x-ota = { path = "../rp235x_ota" }
-utils = { path = "../utils" }
+embedded-tools = { path = "../embedded_tools" }
 
 defmt = "1.0.1"
 defmt-rtt = "1.0.0"
