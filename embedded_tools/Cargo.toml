@@ -2,6 +2,8 @@
 name = "embedded-tools"
 version = "0.1.0"
 edition = "2024"
+authors = ["Chris Dell <cjdell@gmail.com>"]
+description = "Useful tools for embedded firmware"
 
 [dependencies]
 defmt = "1.1.0"

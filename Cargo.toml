@@ -5,6 +5,7 @@ members = [
     "defmt_tcp",
     "embedded_tools",
     "firmware",
+    "rp235x_embedded_tools",
     "rp235x_ota",
     "sim",
     "ws_client",

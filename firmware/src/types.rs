@@ -1,4 +1,4 @@
-use crate::{config::LedBoardConfig, flash::LittleFsFlashStorage};
+use crate::config::LedBoardConfig;
 use alloc::{sync::Arc, vec::Vec};
 use animations::{AnimationEnum, AnimationParams};
 use core::net::Ipv4Addr;
@@ -11,6 +11,7 @@ use embassy_sync::{
 };
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
+use rp235x_embedded_tools::flash::LittleFsFlashStorage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]

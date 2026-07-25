@@ -1484,6 +1484,7 @@ dependencies = [
  "picoserve",
  "portable-atomic",
  "rand_core 0.6.4",
+ "rp235x-embedded-tools",
  "rp235x-ota",
  "serde",
  "serde_json",
@@ -3143,6 +3144,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c92f344f63f950ee36cf4080050e4dce850839b9175da38f9d2ffb69b4dbb21"
 dependencies = [
  "crc-any",
+]
+
+[[package]]
+name = "rp235x-embedded-tools"
+version = "0.1.0"
+dependencies = [
+ "block_device",
+ "defmt 1.1.0",
+ "embassy-rp",
+ "embassy-sync 0.8.0",
+ "embedded-tools",
+ "littlefs-rust",
 ]
 
 [[package]]

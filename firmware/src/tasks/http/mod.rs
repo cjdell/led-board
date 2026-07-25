@@ -8,7 +8,6 @@ mod ota;
 mod web_socket;
 
 use crate::{
-    flash::FlashStorage,
     tasks::http::{
         common::*,
         config::{GetConfigHandler, SaveConfigHandler},
@@ -27,6 +26,7 @@ use picoserve::{
     response::WebSocketUpgrade,
     routing::{PathRouter, get, get_service, post, post_service},
 };
+use rp235x_embedded_tools::flash::FlashStorage;
 
 pub struct AppProps {
     web_socket_incoming_sender: WebSocketIncomingSender,

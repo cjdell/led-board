@@ -1,4 +1,4 @@
-use crate::{flash::FlashStorage, types::*};
+use crate::types::*;
 use alloc::{string::ToString, vec::Vec};
 use defmt::info;
 use embassy_time::{Duration, Timer};
@@ -9,6 +9,7 @@ use picoserve::{
     response::{IntoResponse, ResponseWriter},
     routing::RequestHandlerService,
 };
+use rp235x_embedded_tools::flash::FlashStorage;
 use rp235x_ota::Rp235xOta;
 
 pub struct OtaUpdateHandler {

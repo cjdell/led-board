@@ -6,7 +6,6 @@
 extern crate alloc;
 
 pub mod config;
-pub mod flash;
 pub mod led_screen;
 pub mod tasks;
 pub mod types;

@@ -41,7 +41,6 @@ use embedded_tools::{
 };
 use firmware::{
     config::{DEFAULT_PLAYLIST_FILENAME, LedBoardConfig},
-    flash::{FlashStorage, LittleFsFlashStorage},
     led_screen::LedScreen,
     make_static,
     tasks::{
@@ -51,6 +50,7 @@ use firmware::{
     types::*,
     ws2812p::{PioWs2812ParallelDriver, PioWs2812ParallelProgram},
 };
+use rp235x_embedded_tools::flash::{FlashStorage, LittleFsFlashStorage};
 use smart_leds::RGB8;
 use static_cell::StaticCell;
 
