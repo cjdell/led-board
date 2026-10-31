@@ -168,58 +168,89 @@ pub async fn wifi_task(
     join(
         async {
             if let WifiMode::Station = config.wifi_mode {
-                for network in config.known_wifi_networks {
-                    info!("Starting WiFi connection sequence to: {}", network.ssid.as_str());
+                let mut has_connected_once = false;
 
-                    let start = embassy_time::Instant::now();
+                'station: loop {
+                    for network in &config.known_wifi_networks {
+                        info!("Starting WiFi connection sequence to: {}", network.ssid.as_str());
 
-                    let mut joined = false;
+                        let start = embassy_time::Instant::now();
 
-                    loop {
-                        watchdog.write().await.feed(Duration::from_secs(15));
+                        let mut joined = false;
 
-                        let mut control = control.write().await;
+                        loop {
+                            watchdog.write().await.feed(Duration::from_secs(15));
 
-                        match control
-                            .join(&network.ssid, JoinOptions::new(network.pass.as_bytes()))
-                            .await
-                        {
-                            Ok(()) => {
-                                info!("Joined WiFi network: {}", network.ssid.as_str());
-                                joined = true;
-                                break;
-                            }
-                            Err(e) => {
-                                if start.elapsed() > join_timeout {
-                                    error!("Failed to join WiFi after {} seconds: {:?}", join_timeout.as_secs(), e);
+                            let mut control = control.write().await;
+
+                            match control
+                                .join(&network.ssid, JoinOptions::new(network.pass.as_bytes()))
+                                .await
+                            {
+                                Ok(()) => {
+                                    info!("Joined WiFi network: {}", network.ssid.as_str());
+                                    joined = true;
                                     break;
                                 }
-                                info!("Join attempt failed: {}, retrying...", e);
-                                Timer::after_millis(500).await;
+                                Err(e) => {
+                                    if start.elapsed() > join_timeout {
+                                        error!("Failed to join WiFi after {} seconds: {:?}", join_timeout.as_secs(), e);
+                                        break;
+                                    }
+                                    info!("Join attempt failed: {}, retrying...", e);
+                                    Timer::after_millis(500).await;
+                                }
                             }
                         }
-                    }
 
-                    if !joined {
-                        error!("Failed to connect to WiFi network: {}", network.ssid.as_str());
-                        continue;
-                    }
-
-                    info!("Waiting for DHCP lease...");
-
-                    let cfg = match wait_for_config_timeout(stack, dhcp_timeout).await {
-                        Some(cfg) => cfg,
-                        None => {
-                            error!("DHCP timeout. No IP address assigned.");
+                        if !joined {
+                            error!("Failed to connect to WiFi network: {}", network.ssid.as_str());
                             continue;
                         }
-                    };
 
-                    let ip = cfg.address.address();
-                    info!("Connected! IP Address: {}", ip);
-                    sender.send(EthernetSignalMessage::Connected(ip));
+                        info!("Waiting for DHCP lease...");
 
-                    return; // TODO: We're connected now but we should check that we stay connected
+                        let cfg = match wait_for_config_timeout(stack, dhcp_timeout).await {
+                            Some(cfg) => cfg,
+                            None => {
+                                error!("DHCP timeout. No IP address assigned.");
+                                continue;
+                            }
+                        };
+
+                        let ip = cfg.address.address();
+                        info!("Connected! IP Address: {}", ip);
+                        sender.send(EthernetSignalMessage::Connected(ip));
+
+                        has_connected_once = true;
+
+                        // Supervise the link. cyw43 reports LinkState::Down on deauth (AP-initiated
+                        // kicks on congested venue networks), which takes the stack link/config down.
+                        // If that happens, rejoin instead of sitting dead forever.
+                        loop {
+                            Timer::after(Duration::from_secs(2)).await;
+
+                            watchdog.write().await.feed(Duration::from_secs(15));
+
+                            if stack.is_link_up() && stack.is_config_up() {
+                                continue;
+                            }
+
+                            warn!("WiFi: link lost, starting reconnection sequence...");
+                            break;
+                        }
+
+                        continue 'station;
+                    }
+
+                    if has_connected_once {
+                        // Dropped mid-session and nothing joined this pass (e.g. AP rebooting):
+                        // keep retrying station mode forever instead of falling back to AP.
+                        Timer::after(Duration::from_secs(5)).await;
+                        continue 'station;
+                    }
+
+                    break 'station;
                 }
             }
 
