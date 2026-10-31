@@ -365,7 +365,7 @@ async fn main(spawner: Spawner) {
                         .await;
                 }
                 WebSocketIncomingMessage::Reset => {
-                    if let Err(err) = local_fs.delete_file(DEFAULT_PLAYLIST_FILENAME).await {
+                    if let Err(err) = local_fs.delete(DEFAULT_PLAYLIST_FILENAME).await {
                         error!("Could not delete playlist JSON: {}", defmt::Debug2Format(&err));
                     }
 

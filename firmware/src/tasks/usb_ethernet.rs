@@ -39,6 +39,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Timer};
 use embassy_usb::{Builder, UsbDevice, class::cdc_ncm};
+use embedded_tools::config::ConfigFileTrait as _;
 use static_cell::StaticCell;
 
 const RAW_FLASH_BASE: u32 = 0x1c000000; // See XIP_NOCACHE_NOALLOC_NOTRANSLATE_BASE

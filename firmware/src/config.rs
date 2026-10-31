@@ -2,7 +2,7 @@ use crate::types::LedBoardConfigFile;
 use alloc::string::ToString as _;
 use alloc::vec;
 use alloc::{string::String, vec::Vec};
-use embedded_tools::config::StateError;
+use embedded_tools::config::{ConfigFileTrait as _, StateError};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PLAYLIST_FILENAME: &str = "playlist_default.json";

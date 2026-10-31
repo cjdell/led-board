@@ -1,4 +1,5 @@
 use crate::types::*;
+use embedded_tools::config::ConfigFileTrait as _;
 use picoserve::{
     ResponseSent,
     io::Read,
