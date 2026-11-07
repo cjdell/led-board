@@ -9,8 +9,14 @@ use embassy_rp::{peripherals::TRNG, trng::Trng};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender, signal::Signal};
 use embassy_time::{Duration, Timer};
 
+#[derive(Clone)]
 pub struct WifiControl {
     sender: Sender<'static, NoopRawMutex, bool, 1>,
+}
+
+/// Anything the heartbeat task can blink — the cyw43 LED or the C3 status LED.
+pub trait LedControl: Clone {
+    fn blink(&self, on: bool) -> impl core::future::Future<Output = ()>;
 }
 
 impl WifiControl {
@@ -20,6 +26,12 @@ impl WifiControl {
 
     pub async fn set_led(&self, state: bool) {
         self.sender.send(state).await;
+    }
+}
+
+impl LedControl for WifiControl {
+    fn blink(&self, on: bool) -> impl core::future::Future<Output = ()> {
+        self.set_led(on)
     }
 }
 

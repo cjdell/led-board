@@ -6,6 +6,10 @@ mod config;
 mod info;
 mod ota;
 mod web_socket;
+mod wifi;
+
+#[cfg(feature = "radio")]
+pub mod tunnel;
 
 use crate::{
     tasks::http::{
@@ -14,6 +18,7 @@ use crate::{
         info::{GetAnimationsHandler, GetPlaylistHandler},
         ota::OtaUpdateHandler,
         web_socket::WebSocketHandler,
+        wifi::{WifiJoinHandler, WifiScanHandler},
     },
     types::*,
 };
@@ -27,6 +32,9 @@ use picoserve::{
     routing::{PathRouter, get, get_service, post, post_service},
 };
 use rp235x_embedded_tools::flash::FlashStorage;
+
+#[cfg(feature = "radio")]
+pub use tunnel::TunnelSocket;
 
 pub struct AppProps {
     web_socket_incoming_sender: WebSocketIncomingSender,
@@ -60,6 +68,8 @@ impl AppBuilder for AppProps {
     fn build_app(self) -> Router<Self::PathRouter> {
         let config_file_1 = self.config_file.clone();
         let config_file_2 = self.config_file.clone();
+        let config_file_3 = self.config_file.clone();
+        let config_file_4 = self.config_file.clone();
 
         let local_fs_1 = self.local_fs.clone();
 
@@ -83,6 +93,12 @@ impl AppBuilder for AppProps {
                             "Unreachable"
                         })
                         .options(async || cors_options_response()),
+                    )
+                    .route(
+                        "/wifi",
+                        get_service(WifiScanHandler::new(config_file_3))
+                            .post_service(WifiJoinHandler::new(config_file_4))
+                            .options(async || cors_options_response()),
                     )
                     .nest(
                         "/info",
@@ -156,4 +172,42 @@ pub fn start_http(spawner: Spawner, stack: Stack<'static>, app: AppProps) {
     for id in 0..WEB_TASK_POOL_SIZE {
         spawner.spawn(web_task(id, stack, app).unwrap());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Radio (ESP32-C3 tunnel) serving — no IP stack on the Pico.
+// ---------------------------------------------------------------------------
+
+/// App router pointer for tunnel serving. Stored as an integer because the
+/// router type (via `LocalFs`) is intentionally not `Sync` — a single static
+/// instance shared across connection tasks on one executor.
+#[cfg(feature = "radio")]
+static TUNNEL_APP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Prepare the app router for tunnel-served connections. Connections arrive
+/// via [`crate::tasks::radio`], which calls [`serve_tunnel`] per stream.
+#[cfg(feature = "radio")]
+pub async fn start_http_radio(app: AppProps) {
+    let app = make_static!(AppRouter<AppProps>, app.build_app());
+    let ptr: *const AppRouter<AppProps> = app;
+    TUNNEL_APP.store(ptr as usize, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Serve HTTP requests over a single relayed TCP connection from the C3.
+#[cfg(feature = "radio")]
+pub async fn serve_tunnel(
+    socket: TunnelSocket,
+) -> Result<picoserve::DisconnectionInfo<picoserve::NoGracefulShutdown>, picoserve::Error<tunnel::TunnelError>> {
+    let app = {
+        let ptr = TUNNEL_APP.load(core::sync::atomic::Ordering::Relaxed);
+        if ptr == 0 {
+            defmt::panic!("start_http_radio must run before serving");
+        }
+        unsafe { &*(ptr as *const AppRouter<AppProps>) }
+    };
+
+    let mut http_buffer = Vec::new();
+    http_buffer.resize(8 * 1024, 0);
+
+    Server::new(app, &CONFIG, http_buffer.as_mut()).serve(socket).await
 }

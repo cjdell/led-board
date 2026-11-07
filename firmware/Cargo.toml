@@ -10,8 +10,10 @@ defmt_rtt = []
 wifi = []
 usb_ethernet = []
 ppp = []
+radio = []
 
 [dependencies]
+radio_link = { path = "../radio_link" }
 animations = { path = "../animations", features = [
     "critical-section",
     "defmt",

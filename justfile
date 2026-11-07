@@ -12,7 +12,7 @@ main:
     set -euo pipefail
 
     transport=$(printf '%s\n' "defmt_rtt" "defmt_tcp" | fzf --prompt="Transport> " --height=~10 --header="Select logging transport")
-    network=$(printf '%s\n' "wifi" "usb_ethernet" "ppp" | fzf --prompt="Network> " --height=~10 --header="Select network mode")
+    network=$(printf '%s\n' "wifi" "usb_ethernet" "ppp" "radio" | fzf --prompt="Network> " --height=~10 --header="Select network mode")
 
     echo "Building with features: ${transport},${network}"
     cargo objcopy --release -p firmware --features="${transport},${network}" --bin ws --target thumbv8m.main-none-eabihf -- -O binary tmp/ws.bin
@@ -29,7 +29,7 @@ ota:
     set -euo pipefail
 
     transport=$(printf '%s\n' "defmt_rtt" "defmt_tcp" | fzf --prompt="Transport> " --height=~10 --header="Select logging transport")
-    network=$(printf '%s\n' "wifi" "usb_ethernet" "ppp" | fzf --prompt="Network> " --height=~10 --header="Select network mode")
+    network=$(printf '%s\n' "wifi" "usb_ethernet" "ppp" "radio" | fzf --prompt="Network> " --height=~10 --header="Select network mode")
     host=$(printf '%s\n' "led-board.local" "192.168.7.10" "192.168.1.1" | fzf --prompt="Host> " --height=~10 --header="Select host")
 
     echo "Building with features: ${transport},${network}"
@@ -133,3 +133,20 @@ upload_wifi_firmware:
 
     # probe-rs download firmware/blobs/43439A0.bin --binary-format bin --chip RP235x --base-address 0x10200000
     picotool load --offset 0x10200000 firmware/blobs/43439A0.bin
+
+# ESP32-C3 slave radio firmware
+radio-build:
+    cd slave_radio && cargo build --release
+
+# NOTE: `cargo flash` silently ignores the runner's --partition-table flag and
+# flashed the DEFAULT table (app at 0x10000, colliding with the cfg partition).
+# Always flash explicitly and check the reported partition capacity
+# (factory app is 4,063,232 bytes = 0x3e0000 when the table is applied).
+radio-flash:
+    cd slave_radio && cargo build --release && espflash flash --partition-table partitions.csv target/riscv32imc-unknown-none-elf/release/slave_radio
+
+# Native USB-JTAG disconnects when the chip resets, so monitor with --after no-reset
+# while the app is running (boot logs are lost without a listener attached at boot —
+# the console FIFO drops when nothing is connected, which is by design).
+radio-monitor:
+    espflash monitor --after no-reset

@@ -1,0 +1,30 @@
+[
+  {
+    "label": "Sim",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "sim"],
+      "cwd": "/Users/cjdell/Projects/led-board",
+    },
+    // "relativePathBase": "/Users/cjdell/Projects/led-board",
+    "program": "target/debug/sim",
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+    "request": "launch",
+    "adapter": "CodeLLDB",
+  },
+  {
+    "label": "WS Client",
+    "build": {
+      "command": "cargo",
+      "args": ["build", "-p", "ws_client"],
+      "cwd": "/Users/cjdell/Projects/led-board",
+    },
+    // "relativePathBase": "/Users/cjdell/Projects/led-board",
+    "program": "target/debug/ws_client",
+    // sourceLanguages is required for CodeLLDB (not GDB) when using Rust
+    "sourceLanguages": ["rust"],
+    "request": "launch",
+    "adapter": "CodeLLDB",
+  },
+]

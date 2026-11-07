@@ -44,7 +44,7 @@ use firmware::{
     led_screen::LedScreen,
     make_static,
     tasks::{
-        WifiControl,
+        LedControl as _, WifiControl,
         http::{self, AppProps},
     },
     types::*,
@@ -97,6 +97,7 @@ bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>, dma::InterruptHandler<DMA_CH2>, dma::InterruptHandler<DMA_CH3>;
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
     TRNG_IRQ => trng::InterruptHandler<TRNG>;
+    UART0_IRQ => embassy_rp::uart::BufferedInterruptHandler<UART0>;
 });
 
 static mut CORE1_STACK: embassy_rp::multicore::Stack<32768> = embassy_rp::multicore::Stack::new();
@@ -261,18 +262,67 @@ async fn main(spawner: Spawner) {
         firmware::tasks::ppp::init_ppp(spawner, spi, p.PIN_23, driver, trng, ethernet_signal, watchdog.clone()).await
     };
 
+    // ESP32-C3 slave radio: the C3 owns WiFi; browser connections are relayed
+    // over UART0 (GP12 -> C3 RX, GP13 <- C3 TX). No IP stack runs on the Pico.
+    #[cfg(feature = "radio")]
+    let wifi_control = {
+        let mut uart_config = embassy_rp::uart::Config::default();
+        uart_config.baudrate = firmware::tasks::radio::BAUD;
+
+        let bufs = make_static!(([u8; 1024], [u8; 4096]), ([0u8; 1024], [0u8; 4096]));
+
+        let uart = embassy_rp::uart::BufferedUart::new(
+            p.UART0,
+            p.PIN_12,
+            p.PIN_13,
+            Irqs,
+            &mut bufs.0,
+            &mut bufs.1,
+            uart_config,
+        );
+        let (uart_tx, uart_rx) = uart.split();
+
+        firmware::tasks::radio::init(spawner, uart_tx, uart_rx, ethernet_signal, config_file.clone()).await
+    };
+
     info!("Waiting for Network...");
 
-    let mut receiver = ethernet_signal.receiver().unwrap();
+    #[cfg(not(feature = "radio"))]
+    {
+        let mut receiver = ethernet_signal.receiver().unwrap();
 
-    loop {
-        if let EthernetSignalMessage::Connected(_) = receiver.get().await {
-            info!("MAIN GOT SIGNAL");
-            Timer::after(Duration::from_millis(1_000)).await;
-            break;
+        loop {
+            if let EthernetSignalMessage::Connected(_) = receiver.get().await {
+                info!("MAIN GOT SIGNAL");
+                Timer::after(Duration::from_millis(1_000)).await;
+                break;
+            }
         }
     }
 
+    // With the radio link, don't block forever if the C3 is not flashed yet —
+    // connections simply arrive once it comes up.
+    #[cfg(feature = "radio")]
+    {
+        let mut receiver = ethernet_signal.receiver().unwrap();
+
+        let wait = async {
+            loop {
+                if let EthernetSignalMessage::Connected(_) = receiver.get().await {
+                    info!("MAIN GOT SIGNAL");
+                    break;
+                }
+            }
+        };
+
+        if embassy_time::with_timeout(Duration::from_secs(30), wait).await.is_err() {
+            warn!("No network signal yet — continuing; the radio link can come up later");
+        }
+
+        Timer::after(Duration::from_millis(1_000)).await;
+    }
+
+    #[cfg(not(feature = "radio"))]
     spawner.spawn(defmt_runner(stack).unwrap());
 
     Timer::after(Duration::from_millis(1_000)).await;
@@ -305,6 +355,7 @@ async fn main(spawner: Spawner) {
 
     let web_socket_incoming_channel = make_static!(WebSocketIncomingChannel, WebSocketIncomingChannel::new());
 
+    #[cfg(not(feature = "radio"))]
     http::start_http(
         spawner,
         stack,
@@ -316,6 +367,16 @@ async fn main(spawner: Spawner) {
             watchdog.clone(),
         ),
     );
+
+    #[cfg(feature = "radio")]
+    http::start_http_radio(AppProps::new(
+        web_socket_incoming_channel.sender(),
+        flash_storage,
+        local_fs.clone(),
+        config_file.clone(),
+        watchdog.clone(),
+    ))
+    .await;
 
     let ws_fut = async {
         loop {
@@ -486,16 +547,23 @@ async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, rece
     }
 }
 
+#[cfg(not(feature = "radio"))]
 #[embassy_executor::task]
 async fn defmt_runner(stack: Stack<'static>) {
     #[cfg(feature = "defmt_tcp")]
     defmt_tcp::TCP_SENDER.runner(stack).await;
 }
 
+/// What the heartbeat blinks: the cyw43 LED, or (radio builds) the C3's LED.
+#[cfg(feature = "radio")]
+type Heartbeat = firmware::tasks::radio::RadioLed;
+#[cfg(not(feature = "radio"))]
+type Heartbeat = WifiControl;
+
 #[embassy_executor::task]
 async fn watchdog_runner(
     watchdog: SharedWatchdog,
-    wifi_control: WifiControl,
+    wifi_control: Heartbeat,
     activity_watch: &'static mut ActivityWatchReceiver,
 ) {
     let delay = Duration::from_millis(5_000);
@@ -518,8 +586,8 @@ async fn watchdog_runner(
             watchdog.feed(Duration::from_millis(15_000));
         }
 
-        wifi_control.set_led(true).await;
+        wifi_control.blink(true).await;
         Timer::after(blink).await;
-        wifi_control.set_led(false).await;
+        wifi_control.blink(false).await;
     }
 }

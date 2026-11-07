@@ -1,0 +1,93 @@
+[package]
+name = "slave_radio"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chris Dell <cjdell@gmail.com>"]
+description = "ESP32-C3 slave-radio firmware for the LED board: owns WiFi, relays the Pico's web app over the radio_link UART protocol"
+
+# Detached from the root workspace: different target, toolchain flags, and
+# dependency tree (esp-hal) than the RP2350 firmware.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "slave_radio"
+path = "src/bin/slave_radio.rs"
+
+[dependencies]
+radio_link = { path = "../radio_link" }
+
+esp-backtrace = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-backtrace", features = [
+    "panic-handler",
+    "esp32c3",
+    "println",
+] }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-bootloader-esp-idf", features = ["esp32c3"] }
+esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-hal", features = ["log-04", "unstable", "esp32c3"] }
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-rtos", features = [
+    "embassy",
+    "esp-alloc",
+    "esp-radio",
+    "esp32c3",
+    "log-04",
+] }
+esp-println = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-println", default-features = false, features = ["esp32c3", "log-04", "jtag-serial", "colors", "critical-section"] }
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-alloc", features = ["esp32c3", "nightly"] }
+esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-radio", features = [
+    "esp-alloc",
+    "esp32c3",
+    "log-04",
+    "unstable",
+    "wifi",
+] }
+esp-storage = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-storage", features = ["esp32c3"] }
+
+embassy-executor = { version = "0.10.0", features = ["log"] }
+embassy-time = "0.5.1"
+embassy-net = { version = "0.9.1", features = [
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "dns",
+    "medium-ethernet",
+    "medium-ip",
+    "multicast",
+] }
+embassy-sync = "0.8.0"
+embassy-futures = "0.1.2"
+
+embedded-io = { version = "0.7.1", features = ["alloc"] }
+embedded-io-async = { version = "0.7.0", features = ["alloc"] }
+embedded-storage = "0.3.1"
+
+log = "0.4"
+
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+static_cell = "2.1"
+rand_core = "0.6"
+
+# Registry edge-* releases (same as the Rustagon reference) — built against
+# registry embassy-net 0.9.1, which esp-radio's interface also targets.
+edge-captive = "0.8.0"
+edge-dhcp = "0.8.0"
+edge-mdns = { version = "0.8.0", features = ["log"] }
+edge-nal = "0.7.0"
+edge-nal-embassy = { version = "0.9.0", default-features = false, features = [
+    "dhcpv4",
+    "dns",
+    "multicast",
+    "proto-ipv4",
+    "tcp",
+    "udp",
+    "medium-ethernet",
+    "medium-ip",
+] }
+
+[profile.release]
+debug = 2
+lto = "fat"
+codegen-units = 1
+opt-level = "s"

@@ -1,0 +1,9 @@
+[package]
+name = "radio_link"
+version = "0.1.0"
+edition = "2024"
+description = "Framed UART link protocol shared between the RP2350 (Pico 2 W) and the ESP32-C3 slave radio"
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

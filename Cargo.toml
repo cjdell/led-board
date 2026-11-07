@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
+exclude = ["slave_radio"]
 members = [
     "animations",
     "defmt_tcp",
     "embedded_tools",
     "firmware",
     "rp235x_embedded_tools",
+    "radio_link",
     "rp235x_ota",
     "sim",
     "ws_client",

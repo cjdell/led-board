@@ -1,0 +1,16 @@
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --partition-table partitions.csv --monitor"
+rustflags = [
+    "-C",
+    "link-arg=-Tlinkall.x",
+    "-C",
+    "force-frame-pointers",
+]
+
+[env]
+ESP_LOG = "info"
+# Required for AP-STA (fallback AP while station retries):
+ESP_RADIO_CONFIG_EVENT_CHANNEL_CAPACITY = "4"
+
+[build]
+target = "riscv32imc-unknown-none-elf"

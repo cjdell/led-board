@@ -70,6 +70,10 @@ impl RequestHandlerService<()> for SaveConfigHandler {
             return format_response!(req, writer, "Error save JSON: {err:?}");
         }
 
+        // Mirror the updated WiFi config to the ESP32-C3 slave radio (no-op without the radio build).
+        #[cfg(feature = "radio")]
+        crate::tasks::radio::sync_config(self.config_file.clone()).await;
+
         format_response!(req, writer, "Done")
     }
 }
