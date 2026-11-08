@@ -97,6 +97,12 @@ impl Store {
         Self { flash }
     }
 
+    /// The raw flash handle. The store mutex is the single gate for every
+    /// flash writer (journal, OTA slots, otadata) — see `crate::ota`.
+    pub fn flash_mut(&mut self) -> &mut FlashStorage<'static> {
+        &mut self.flash
+    }
+
     /// Load the newest valid record, or defaults when never written/corrupt.
     pub fn load(&mut self) -> StoredConfig {
         let a = read_sector(&mut self.flash, SECTOR_A);

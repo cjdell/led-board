@@ -147,11 +147,27 @@ radio-build:
 # Always flash explicitly and check the reported partition capacity
 # (factory app is 4,063,232 bytes = 0x3e0000 when the table is applied).
 radio-flash:
-    cd slave_radio && cargo build --release && espflash flash --partition-table partitions.csv target/riscv32imc-unknown-none-elf/release/slave_radio
+    cd slave_radio && cargo build --release && espflash flash --partition-table partitions.csv --target-app-partition ota_0 target/riscv32imc-unknown-none-elf/release/slave_radio && espflash erase-region 0xd000 0x2000 && espflash reset
 
 # ESP32-C6 variant (rv32imac target + esp32c6 feature; same 4MB partition table).
+# USB flash always writes ota_0 and clears otadata so booting is deterministic
+# (empty otadata → first app partition); OTA updates flip slots themselves.
 radio-c6-flash:
-    cd slave_radio && cargo build --release --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf && espflash flash --partition-table partitions.csv target/riscv32imac-unknown-none-elf/release/slave_radio
+    cd slave_radio && cargo build --release --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf && espflash flash --partition-table partitions.csv --target-app-partition ota_0 target/riscv32imac-unknown-none-elf/release/slave_radio && espflash erase-region 0xd000 0x2000 && espflash reset
+
+# OTA the radio itself over the LAN: streams the image into the inactive OTA
+# slot via /api/ota-radio, flips otadata, reboots (~20 s outage). Override
+# target host with RADIO_HOST=... just radio-ota
+radio-ota:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$HOME/.cargo/bin:$PATH"
+    (cd slave_radio && cargo build --release --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf)
+    espflash save-image --chip esp32c6 slave_radio/target/riscv32imac-unknown-none-elf/release/slave_radio tmp/radio.bin
+    echo "radio image: $(stat -f%z tmp/radio.bin) bytes sha256 $(sha256sum tmp/radio.bin | awk '{print $1}')"
+    curl -sS -X POST --data-binary @tmp/radio.bin "http://${RADIO_HOST:-192.168.49.137}/api/ota-radio"
+    echo
+    echo "radio rebooting; rejoined + re-linked in ~20 s (check: GET /api/ota-radio slot)"
 
 # Native USB-JTAG disconnects when the chip resets, so monitor with --after no-reset
 # while the app is running (boot logs are lost without a listener attached at boot —

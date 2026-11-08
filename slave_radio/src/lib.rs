@@ -29,6 +29,7 @@ pub mod httpd;
 pub mod link;
 pub mod mdns;
 pub mod net;
+pub mod ota;
 pub mod portal;
 pub mod state;
 pub mod store;

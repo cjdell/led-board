@@ -6,6 +6,7 @@
 
 use alloc::{boxed::Box, format, string::String, string::ToString as _, vec::Vec};
 
+use radio_link::RadioMode;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -25,9 +26,16 @@ pub struct RequestHead {
 
 /// Parse a request head out of already-buffered bytes.
 pub fn parse_head(raw: &[u8]) -> RequestHead {
-    let text = core::str::from_utf8(raw).unwrap_or("");
-    let head_text = text.split("\r\n\r\n").next().unwrap_or(text);
-    let mut lines = head_text.split("\r\n");
+    // Head-parse over BYTES up to the terminator only: a large POST's prefix
+    // also carries binary body data, and from_utf8 on the whole buffer fails
+    // on that — which once silently turned a `POST /api/ota-radio` into a
+    // default "GET /" and relayed the firmware upload to the Pico (404).
+    let head_len = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(raw.len());
+    let text = core::str::from_utf8(&raw[..head_len]).unwrap_or("");
+    let mut lines = text.split("\r\n");
 
     let request_line = lines.next().unwrap_or("GET /");
     let mut parts = request_line.split(' ');
@@ -64,11 +72,31 @@ pub fn parse_head(raw: &[u8]) -> RequestHead {
 pub async fn route(head: &RequestHead) -> Option<&'static [u8]> {
     let path = head.path.split('?').next().unwrap_or("/").to_string();
 
-    // Captive-detection probes → redirect to the portal (keeps phones popping up).
+    // When the board is up, the Pico's full web app owns the root and the
+    // provisioning page lives at /setup. When it is down, the portal reclaims
+    // the root: recovery users (and the captive redirect) must land on the one
+    // page that works without the main MCU.
+    let pico = state::pico_online();
+
+    // Captive-detection probes → redirect (keeps phones popping up). Where the
+    // popup lands depends on why the AP is up: an explicit AccessPoint mode
+    // means the user asked for the local app, so go straight there; a
+    // fallback AP means WiFi needs repair, so land on setup first — even
+    // when the board is online.
     match path.as_str() {
         "/generate_204" | "/hotspot-detect.html" | "/connecttest.txt" | "/fwlink/" | "/redirect"
         | "/library/test/success.html" | "/success.txt" => {
-            return Some(leak(httpd::redirect(&format!("http://{}/", state::AP_IP))));
+            let mode = {
+                let store = httpd::store();
+                let mut store = store.lock().await;
+                store.load().mode
+            };
+            let target = if matches!(mode, RadioMode::AccessPoint) && state::pico_online() {
+                "/"
+            } else {
+                "/setup"
+            };
+            return Some(leak(httpd::redirect(&format!("http://{}{}", state::AP_IP, target))));
         }
         _ => {}
     }
@@ -79,13 +107,15 @@ pub async fn route(head: &RequestHead) -> Option<&'static [u8]> {
     }
 
     match (head.method.as_str(), path.as_str()) {
-        ("GET", "/") | ("GET", "/index.html") => Some(leak(httpd::response("200 OK", HTML, PORTAL_HTML.as_bytes()))),
+        ("GET", "/setup") => Some(leak(httpd::response("200 OK", HTML, PORTAL_HTML.as_bytes()))),
+        ("GET", "/") | ("GET", "/index.html") if !pico => Some(leak(httpd::response("200 OK", HTML, PORTAL_HTML.as_bytes()))),
         ("GET", "/favicon.ico") => Some(leak(httpd::response("204 No Content", "image/x-icon", b""))),
         ("GET", "/api/status") => Some(leak(status_json().await)),
         ("GET", "/api/wifi") => Some(leak(scan_json().await)),
         ("POST", "/api/wifi") => Some(leak(join_json(&head.body).await)),
         ("POST", "/api/forget") => Some(leak(forget_json(&head.body).await)),
         ("GET", "/api/networks") => Some(leak(networks_json().await)),
+        ("GET", "/api/ota-radio") => Some(leak(crate::ota::status_json().await)),
         _ => None, // relay to the Pico
     }
 }
@@ -233,6 +263,7 @@ const PORTAL_HTML: &str = r#"<!doctype html>
 <div class="wrap">
   <h1>LED Board — WiFi Setup</h1>
   <div class="card status" id="status">Loading…</div>
+  <div class="card" id="appcard" style="display:none"><a href="/" style="color:#fff;text-decoration:none"><button>Open LED Board app</button></a></div>
 
   <h2>Scan networks <button id="scan" style="float:right">Search</button></h2>
   <div class="card" id="results"><span class="status">Press Search to scan.</span></div>
@@ -258,6 +289,7 @@ async function refreshStatus() {
     else txt = 'Connecting…';
     txt += s.pico_online ? ' · board online' : ' · board offline';
     $('status').innerHTML = txt;
+    $('appcard').style.display = s.pico_online ? '' : 'none';
   } catch (e) { $('status').textContent = 'status error: ' + e; }
 }
 

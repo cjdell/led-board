@@ -18,6 +18,11 @@ rustflags = [
 
 [env]
 ESP_LOG = "info"
+# Fragmentation-tolerant heap allocator. The default LLFF list allocator
+# OOM-panicked the chip under page-load churn while `heap_free` still showed
+# ~10 KB (a 1 KB allocation inside a flash write found no contiguous block).
+# TLSF is two-level segregated fit: bounded time, no fragmentation cliff.
+ESP_ALLOC_CONFIG_HEAP_ALGORITHM = "TLSF"
 # Required for AP-STA (fallback AP while station retries):
 ESP_RADIO_CONFIG_EVENT_CHANNEL_CAPACITY = "4"
 

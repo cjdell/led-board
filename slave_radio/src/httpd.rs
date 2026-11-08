@@ -18,6 +18,7 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Write as _;
 
 use crate::link;
+use crate::ota;
 use crate::portal::{self, RequestHead};
 use crate::state;
 use crate::store::{SharedStore, Store};
@@ -75,6 +76,11 @@ async fn ap_http_task(stack: Stack<'static>) {
         prefix.clear();
 
         match read_head(&mut socket, &mut prefix).await {
+            Some(head) if ota::is_own(&head) => {
+                // Radio's own firmware update/status — served locally (works
+                // with the Pico offline; it is precisely for that case).
+                ota::serve(&mut socket, &head).await;
+            }
             Some(head) => {
                 if let Some(response) = portal::route(&head).await {
                     let _ = socket.write_all(response).await;
@@ -84,11 +90,16 @@ async fn ap_http_task(stack: Stack<'static>) {
                 } else {
                     let page = b"HTTP/1.1 503 Service Unavailable\r\n\
                         Content-Type: text/html\r\nConnection: close\r\n\r\n\
-                        <p>The main board is offline. Use the <a href=\"/\">WiFi setup page</a>.</p>";
+                        <p>The main board is offline. Use the <a href=\"/setup\">WiFi setup page</a>.</p>";
                     let _ = socket.write_all(page).await;
                 }
             }
-            None => {}
+            None => {
+                // Poisoned/scanner connection — see the STA acceptor: an RST
+                // stops the peer's stale retransmissions from re-poisoning.
+                socket.abort();
+                continue;
+            }
         }
 
         drain_close(&mut socket).await;
@@ -113,14 +124,38 @@ async fn sta_relay_task(stack: Stack<'static>) {
             continue;
         }
 
-        if state::pico_online() {
-            log::info!("relay: STA conn, opening stream");
-            relay_stream(&mut socket, Vec::new()).await;
-            log::info!("relay: STA relay done");
-        } else {
-            log::info!("relay: STA conn, PICO OFFLINE -> 503");
-            let body = b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            let _ = socket.write_all(body).await;
+        // Peek the request head so the radio's own management endpoints can
+        // be served without involving the Pico; everything else is relayed as
+        // raw bytes (the peeked prefix included), exactly as before.
+        let mut prefix: Vec<u8> = Vec::new();
+        let head_opt = read_head(&mut socket, &mut prefix).await;
+        if let Some(h) = &head_opt {
+            log::info!("relay: head m={} p={} cl={} own={} pre={}", h.method, h.path, h.content_length, ota::is_own(h), prefix.len());
+        }
+        match head_opt {
+            Some(head) if ota::is_own(&head) => {
+                log::info!("relay: STA ota-radio request");
+                ota::serve(&mut socket, &head).await;
+            }
+            Some(head) if state::pico_online() => {
+                log::info!("relay: STA conn, opening stream");
+                relay_stream(&mut socket, head.raw).await;
+                log::info!("relay: STA relay done");
+            }
+            Some(_) => {
+                log::info!("relay: STA conn, PICO OFFLINE -> 503");
+                let body = b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                let _ = socket.write_all(body).await;
+            }
+            None => {
+                // Garbage connection (poisoned stale bytes, scanner). An RST
+                // instead of a graceful FIN is deliberate: the client kernel
+                // retransmits the stale bytes on the same 4-tuple for
+                // minutes, re-poisoning each new connection. The RST kills
+                // the peer's socket immediately, so the retry lands clean.
+                socket.abort();
+                continue;
+            }
         }
 
         drain_close(&mut socket).await;
@@ -172,6 +207,9 @@ async fn relay_stream(socket: &mut TcpSocket<'_>, prefix: Vec<u8>) {
     if !prefix.is_empty() {
         alive = link::send_stream_data(entry, &prefix).await;
     }
+    // Release the head-peek buffer (up to 4 KB) before the long pump — it is
+    // heap that every concurrent stream would otherwise pin for its lifetime.
+    drop(prefix);
 
     while alive {
         let either = embassy_futures::select::select(reader.read(&mut buf), entry.queue.receive()).await;
@@ -210,6 +248,23 @@ async fn relay_stream(socket: &mut TcpSocket<'_>, prefix: Vec<u8>) {
 // Request head parsing (shared by the AP acceptor and the portal)
 // ---------------------------------------------------------------------------
 
+/// Every RFC 9110 method token, prefix-matched against the first bytes of a
+/// connection. A connection that does not start with one is garbage — stale
+/// bytes from an aborted upload landing on a same-tuple reconnection (real
+/// bench failure: a POST body's tail poisoned the next connection's head)
+/// or a scanner — closed immediately so the client's retry lands clean.
+const HTTP_METHODS: [&[u8]; 9] = [
+    b"GET ",
+    b"POST",
+    b"HEAD ",
+    b"PUT ",
+    b"PATCH",
+    b"DELETE",
+    b"OPTION",
+    b"CONNET",
+    b"TRACE ",
+];
+
 /// Read the HTTP request head (and any body) into `prefix`, returning the
 /// parsed request. `prefix` accumulates every byte consumed so it can be
 /// replayed toward the Pico on the relay path.
@@ -230,17 +285,31 @@ pub async fn read_head(socket: &mut TcpSocket<'_>, prefix: &mut Vec<u8>) -> Opti
     if prefix.is_empty() {
         return None;
     }
+    if !HTTP_METHODS.iter().any(|m| prefix.starts_with(m)) {
+        log::warn!(
+            "httpd: non-HTTP bytes on :80 ({:02x?}…) — dropping",
+            &prefix[..prefix.len().min(4)]
+        );
+        return None;
+    }
 
     let mut head = portal::parse_head(prefix);
 
-    // Pull a declared (small) body.
-    while head.body.len() < head.content_length && head.body.len() < 8192 {
-        match socket.read(&mut tmp).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let want = core::cmp::min(n, head.content_length - head.body.len());
-                head.body.extend_from_slice(&tmp[..want]);
-                prefix.extend_from_slice(&tmp[..n]);
+    // Pull a declared body — but only when it is small enough to buffer.
+    // A large upload must not grow `prefix` at all: on the fragmented 112 KB
+    // heap a 7 KB realloc OOM-panicked the chip mid-upload. Big bodies stream
+    // straight from the socket instead — `ota::update` seeds from `head.body`
+    // and keeps reading, and relayed POSTs (e.g. /api/ota) forward the head
+    // and pump the rest like any other bytes.
+    if head.content_length > 0 && head.content_length <= 4096 {
+        while head.body.len() < head.content_length && head.body.len() < 8192 {
+            match socket.read(&mut tmp).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let want = core::cmp::min(n, head.content_length - head.body.len());
+                    head.body.extend_from_slice(&tmp[..want]);
+                    prefix.extend_from_slice(&tmp[..n]);
+                }
             }
         }
     }

@@ -8,8 +8,11 @@ sleep 1
 
 C6PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | grep -v bench | head -1)
 [ -z "$C6PORT" ] && { echo "no C6 port"; exit 1; }
-(cd slave_radio && espflash flash --partition-table partitions.csv -p "$C6PORT" \
+(cd slave_radio && espflash flash --partition-table partitions.csv --target-app-partition ota_0 -p "$C6PORT" \
     target/riscv32imac-unknown-none-elf/release/slave_radio 2>&1 | grep -E 'Flashing has completed|error')
+# Deterministic A/B after USB flash: clear otadata → bootloader boots ota_0.
+espflash erase-region -p "$C6PORT" 0xd000 0x2000 >/dev/null 2>&1 || true
+espflash reset -p "$C6PORT" >/dev/null 2>&1 || true
 
 just bootsel
 # Wait for BOOTSEL to become accessible (can lag enumeration by seconds).

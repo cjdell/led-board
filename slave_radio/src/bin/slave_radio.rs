@@ -22,7 +22,7 @@ use esp_hal::{
     clock::CpuClock,
     dma::DmaRxBuf,
     dma_buffers,
-    gpio::{Level, Output},
+    gpio::{Input, InputConfig, Level, Output, Pull},
     interrupt::software::SoftwareInterruptControl,
     ram,
     rng::Rng,
@@ -36,7 +36,7 @@ use esp_storage::FlashStorage;
 use radio_link::RadioMode;
 
 use slave_radio::{
-    httpd, link, net, state,
+    httpd, link, net, ota, state,
     store::{SharedStore, Store},
     supervisor,
 };
@@ -65,6 +65,15 @@ async fn main(spawner: Spawner) -> ! {
     let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
+    // ---- OTA boot guard -----------------------------------------------------
+    // Before anything else touches flash: BOOT (GPIO9, strap pin kept free by
+    // this design, input-pull-up after boot) held low across reset flips
+    // otadata to the other app slot and reboots into it; otherwise a freshly
+    // activated OTA image is confirmed Valid. See `slave_radio::ota`.
+    let mut flash = FlashStorage::new(peripherals.FLASH);
+    let boot_btn = Input::new(peripherals.GPIO9, InputConfig::default().with_pull(Pull::Up));
+    ota::boot_guard(&mut flash, boot_btn.is_low());
+
     // Bring-up diagnostics: wait for a host to attach before printing anything.
     // The USB-JTAG FIFO drops output while no listener is attached, and opening
     // the port resets the chip — so this delay makes each attach replay boot.
@@ -78,8 +87,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // ---- persistent store ---------------------------------------------------
     esp_println::println!("stage: store init");
-    let store: &'static SharedStore =
-        Box::leak(Box::new(Mutex::new(Store::new(FlashStorage::new(peripherals.FLASH)))));
+    let store: &'static SharedStore = Box::leak(Box::new(Mutex::new(Store::new(flash))));
     httpd::init_store(store);
 
     let cfg = {

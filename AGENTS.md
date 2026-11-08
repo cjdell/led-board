@@ -105,7 +105,7 @@ OTA over the network: `just ota` (builds, then `curl POST /api/ota`).
 
 Keep `tmp/ws.elf` (copy of the release ELF) for `probe-rs attach`/`defmt-print`.
 
-## Flashing — ESP32-C3 (`slave_radio/`)
+## Flashing — ESP32-C6 / C3 (`slave_radio/`)
 
 ```sh
 just radio-flash    # build + espflash flash --partition-table partitions.csv (explicit!)
@@ -114,19 +114,57 @@ just radio-flash    # build + espflash flash --partition-table partitions.csv (e
 - **Never trust `cargo flash` here**: the `runner`'s `--partition-table` flag is
   silently ignored, and the chip gets the *default* table (factory app at
   `0x10000`) — which **collides with the `cfg` journal** also at `0x10000`.
-  Verify a flash used the custom table: espflash reports app partition capacity
-  `4,063,232` (= `0x3e0000`) when applied, vs `4,128,768` for the default.
   `partitions.csv` gotchas: esp-idf-part rejects custom data subtypes like
   `0x40` (use `undefined`); `espflash erase-region` takes positional
   `<addr> <size>`; wipe stored WiFi config with
   `espflash erase-region 0x10000 0x4000`.
-- Flashes over the C3's **native USB-JTAG** port (`/dev/cu.usbmodem…`,
+- Flashes over the C6's **native USB-JTAG** port (`/dev/cu.usbmodem…`,
   `espflash list-ports` finds it). ~7 s for the ~690 KB image.
 - `espflash board-info -p <port>` is a safe health check; it ends with a
   hard-reset back into the app.
 - Config store lives in flash at `0x10000` (`cfg` partition). Factory config
   boots into AP **"LED Board"** at `192.168.2.1` (mDNS `led-board.local`),
   captive portal included; saved-network failures fall back to the same AP.
+
+### A/B partition table + radio OTA (Nov 2026)
+
+`partitions.csv`: nvs(0x9000) / otadata(**0xd000**) / phy / cfg(0x10000,
+unchanged) / **ota_0@0x20000** / **ota_1@0x210000**, each `0x1F0000` (~2 MB);
+no factory app. espflash confirms the custom table with app capacity
+**2,031,616** (= `0x1F0000`).
+
+USB flash on this table **must name the slot** and clear otadata for a
+deterministic boot (both are built into `scripts/flash_both.sh` and the
+`radio-flash`/`radio-c6-flash` just recipes):
+
+```sh
+espflash flash --partition-table partitions.csv --target-app-partition ota_0 …
+espflash erase-region -p <port> 0xd000 0x2000   # empty otadata → boots ota_0
+espflash reset -p <port>
+```
+
+**OTA over the network**: `just radio-ota` — builds the C6 image,
+`espflash save-image --chip esp32c6 <ELF> tmp/radio.bin`, then
+`curl POST /api/ota-radio` to the board's IP. The C6 streams the image into
+the *inactive* slot (`src/ota.rs`), flips otadata, reboots; `GET
+/api/ota-radio` returns `{version, slot, update_writes_to}` — check `slot`
+flipped. STA acceptor peeks the request head and serves the ota-post
+*locally even when the Pico is offline*; `/api/ota-radio` is portal-claimed
+so it also works on the fallback AP (POST via phone won't work — needs the
+ELF — but GET status does).
+
+- **Boot confirm/rollback hatch**: the app marks the running slot `Valid` at
+  boot (after `esp_rtos::start`, before anything touches flash).
+  The prebuilt bootloader has **no auto-rollback**, so a bootable-but-broken
+  image stays booted — the manual recovery is to **hold GPIO9 (C6 BOOT strap,
+  input-pull-up after boot) LOW across a reset**: the boot guard then flips
+  otadata to the other slot and reboots. C6-Zero may have no physical button
+  — bridge GPIO9→GND before power-up/reset, or just re-flash over USB.
+- The OTA write holds the **store mutex** for the whole upload (~30 s on
+  WiFi): the journal and portal API block meanwhile — by design; the chip
+  reboots at the end regardless.
+- Don't `erase-region 0xd000` while inspecting slot state after an OTA —
+  that resets selection to ota_0.
 
 ## Monitoring — C3 (important quirks)
 
@@ -166,8 +204,10 @@ just radio-flash    # build + espflash flash --partition-table partitions.csv (e
   jumpers; re-test after wiring rework before raising it. GP0/GP1 are
   deliberately left free for a debug console.
 - GP2–GP9: WS2812 STRIP 0–7 (PIO1). GP23/24/25/29: cyw43 (wifi builds only).
-- C3 GPIO8: status LED (active-low). GPIO18/19: USB (console). Avoid
-  GPIO 2/8/9/11 for new wiring (boot strapping) and 26–31 (flash).
+- C3/C6 GPIO8: status LED (active-low). GPIO18/19: USB (console). C6 **GPIO9**
+  is the OTA boot-guard input (BOOT strap; held low across reset = flip A/B
+  slot) — do not wire elsewhere. Avoid GPIO 2/8/11 for new wiring (boot
+  strapping) and 26–31 (flash).
 - RP2351 legal UART pins are fixed-function; the authoritative list is the
   `impl_pin!` table in the locked embassy-rp checkout (`uart/mod.rs`).
 
@@ -205,6 +245,26 @@ Pico wifi ≈ 501 KB, Pico radio ≈ 408 KB (4 MB flash); C3 ≈ 690 KB
   the fallback AP after a successful STA join** (Station mode; ApStation keeps
   it) via an APSTA→STA `set_config`. The `hb:` heartbeat logs `heap_free` —
   watch it under load; floor during the 4-way burst suite ≈ 14 KB.
+  The global allocator is **TLSF** (`ESP_ALLOC_CONFIG_HEAP_ALGORITHM` in
+  `.cargo/config.toml`) — the default LLFF list allocator OOM-panicked mid-
+  suite while `heap_free` still read ~10 KB (fragmentation: a 1 KB flash-write
+  scratch found no contiguous block). Changing the value needs `cargo clean -p
+  esp-alloc`. `heap_free` is a *sum* — it can lie while the largest free block
+  is tiny; suspect fragmentation first when small allocs fail.
+- **read_head buffering rules** (`slave_radio/src/httpd.rs`): the acceptor
+  peeks the request head on every connection (STA *and* AP) so `/api/ota-radio`
+  is served by the radio itself. Consequences to remember: (1) `parse_head`
+  must slice the head in BYTES before `from_utf8` — a POST prefix carries
+  binary body and UTF-8-failing-the-whole-buffer silently became `GET /` and
+  relayed firmware uploads to the Pico (404); (2) bodies > 4096 B are NOT
+  buffered into `prefix` (a growing prefix realloc OOM-panicked the chip
+  mid-upload; `ota::update` and the relay stream the rest from the socket);
+  (3) connections not starting with an HTTP method token are RST'd — stale
+  same-4-tuple retransmits from an aborted upload otherwise land as the next
+  connection's head (poisoned `GET /` relays, identical truncated responses
+  run after run). Big uploads: curl POSTs to a flaky link land in `just
+  radio-ota`'s retry loop by design (writes to the inactive slot are
+  idempotent from offset 0).
 - Acceptance harness: `./scripts/stress.sh` — captures both consoles, waits for the
   STA lease to answer (preflight), runs 3 single + 3×4-burst page loads
   (73,541 B), then requires one sha256 group, 0 curl failures, and 0
@@ -216,4 +276,13 @@ Pico wifi ≈ 501 KB, Pico radio ≈ 408 KB (4 MB flash); C3 ≈ 690 KB
 - Pico runs no IP stack in `radio` mode; the C3 terminates TCP and relays
   sockets to picoserve on the Pico. Provisioning API (`/api/wifi`, `/api/status`,
   `/api/networks`, `/api/forget`) is answered by the C3 itself so the portal
-  works even with the Pico unpowered.
+  works even with the Pico unpowered. AP-mode routing: the **Pico app owns
+  `/` whenever it is online** (full web UI over the relay in AP mode too);
+  provisioning lives at `/setup`, and captive probes redirect there — or
+  straight to the app when mode is explicitly `AccessPoint` (the AP exists to
+  serve the UI then; fallback-AP pops still land on setup for repair). With the
+  board offline, the portal reclaims `/` for recovery. (`portal::route` claims
+  only probes/OPTIONS/`/setup`/`/favicon.ico`/the five API paths — anything
+  else relays, including WebSockets and `/api/ota`.) In pure `AccessPoint`
+  mode the supervisor never joins: `/setup` "Connect" only saves credentials;
+  joining resumes when mode returns to Station.
