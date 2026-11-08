@@ -5,7 +5,7 @@
 //! ```text
 //!                        ┌──────────────────────── ESP32-C3 ────────────────────────┐
 //!  WiFi LAN ════════════► STA stack :80 ──┐                                        │
-//!                        │                 ├─► link (UART0 @921600) ═══════════════►│ Pico 2 W
+//!                        │                 ├─► link (UART1 @921600, RX uses UHCI DMA) ═►│ Pico 2 W
 //!  Provisioning AP ═════► AP stack :80 ───┘        │        ▲                       │ (firmware
 //!  (fallback + portal)   │      ▲                  │        │                       │  --features
 //!                        │      └── captive portal │        └── RPC: scan/join/… ───►│   radio)

@@ -39,9 +39,13 @@ ota:
 
     sum=$(sha256sum tmp/ws.bin | awk "{print \$1}")
 
-    echo "Uploading..."
+    # Raw-DEFLATE the image (~2.5x smaller): the /api/ota handler inflates
+    # streams when the query carries z=raw (link runs at 115200, see notes).
+    python3 -c "import zlib; d=open('tmp/ws.bin','rb').read(); c=zlib.compressobj(9,zlib.DEFLATED,-15); open('tmp/ws.def','wb').write(c.compress(d)+c.flush())"
 
-    curl -# -X POST --data-binary @tmp/ws.bin "http://$host/api/ota?$sum"
+    echo "Uploading... ($(stat -f%z tmp/ws.bin) -> $(stat -f%z tmp/ws.def) bytes on the wire)"
+
+    curl -# -X POST --data-binary @tmp/ws.def "http://$host/api/ota?$sum&z=raw"
 
 attach_rtt:
     probe-rs attach --chip RP235x tmp/ws.elf
@@ -145,8 +149,20 @@ radio-build:
 radio-flash:
     cd slave_radio && cargo build --release && espflash flash --partition-table partitions.csv target/riscv32imc-unknown-none-elf/release/slave_radio
 
+# ESP32-C6 variant (rv32imac target + esp32c6 feature; same 4MB partition table).
+radio-c6-flash:
+    cd slave_radio && cargo build --release --no-default-features --features esp32c6 --target riscv32imac-unknown-none-elf && espflash flash --partition-table partitions.csv target/riscv32imac-unknown-none-elf/release/slave_radio
+
 # Native USB-JTAG disconnects when the chip resets, so monitor with --after no-reset
 # while the app is running (boot logs are lost without a listener attached at boot —
 # the console FIFO drops when nothing is connected, which is by design).
 radio-monitor:
     espflash monitor --after no-reset
+
+# Jump the running Pico app into BOOTSEL over USB — no button press. Works
+# because the `console` build exposes the pico-sdk vendor reset interface
+# (see firmware/src/tasks/usb_dbg.rs). The --vid/--pid flags are required:
+# picotool's default scan only auto-classifies VID 2E8A, and app-mode 2E8A
+# devices are grabbed by a DriverKit personality on this Mac and never bind.
+bootsel:
+    picotool reboot -u -f --vid 5824 --pid 1171

@@ -20,12 +20,14 @@ use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
+    dma::DmaRxBuf,
+    dma_buffers,
     gpio::{Level, Output},
     interrupt::software::SoftwareInterruptControl,
     ram,
     rng::Rng,
     timer::timg::TimerGroup,
-    uart::{Config as UartConfig, Uart},
+    uart::{Config as UartConfig, Uart, uhci::Uhci},
 };
 use esp_radio::wifi::{
     ap::AccessPointConfig, sta::StationConfig, AuthenticationMethod, Config, ControllerConfig,
@@ -93,18 +95,45 @@ async fn main(spawner: Spawner) -> ! {
 
     // ---- UART link to the Pico ----------------------------------------------
     esp_println::println!("stage: uart init");
-    let uart_config = UartConfig::default().with_baudrate(921_600);
+    // The RX side runs through the UHCI UART-DMA engine. The plain
+    // interrupt-driven path could not keep up above 115200 — esp-radio's
+    // interrupt load starved the 128-byte FIFO and sustained transfers
+    // overflowed (`FifoOverflowed`). With DMA the engine drains the FIFO on its
+    // own, so the link runs at `radio_link::BAUD` (921600) with a 4 KB buffer
+    // absorbing scheduling latency.
+    let uart_config = UartConfig::default().with_baudrate(radio_link::BAUD);
     let uart = Uart::new(peripherals.UART1, uart_config)
         .expect("uart config")
         .with_tx(peripherals.GPIO21)
-        .with_rx(peripherals.GPIO20)
-        .into_async();
-    let (uart_rx, uart_tx) = uart.split();
+        .with_rx(peripherals.GPIO20);
+
+    let (rx_buffer, rx_descriptors, _tx_buffer, _tx_descriptors) =
+        dma_buffers!(link::RX_DMA_CHUNK as usize);
+    let dma_rx = DmaRxBuf::new(rx_descriptors, rx_buffer).expect("dma rx buffer");
+    // Second ping-pong buffer: rx_task re-arms this the instant the other
+    // transfer completes, so the DMA is never disarmed while frames are
+    // decoded (a disarmed window shed bytes mid-frame under load).
+    let (rx_buffer2, rx_descriptors2, _, _) = dma_buffers!(link::RX_DMA_CHUNK as usize);
+    let dma_rx2 = DmaRxBuf::new(rx_descriptors2, rx_buffer2).expect("dma rx buffer 2");
+
+    let mut uhci = Uhci::new(uart, peripherals.UHCI0, peripherals.DMA_CH0);
+    uhci.apply_rx_config(&esp_hal::uart::uhci::RxConfig::default().with_chunk_limit(link::RX_DMA_CHUNK))
+        .expect("uhci rx config");
+    uhci.apply_tx_config(&esp_hal::uart::uhci::TxConfig::default())
+        .expect("uhci tx config");
+    uhci.set_uart_config(&uart_config).expect("uart config");
+
+    let (uart_rx, uart_tx) = uhci.into_async().split();
+    // TX stays on the plain async UART path; only RX needs DMA.
+    let uart_tx = uart_tx.uart_tx;
 
     let led = Output::new(peripherals.GPIO8, Level::Low, Default::default());
 
-    link::start(&spawner, uart_rx, uart_tx, led);
-    esp_println::println!("stage: link started");
+    link::start(&spawner, uart_rx, uart_tx, dma_rx, dma_rx2, led);
+    esp_println::println!(
+        "stage: link started (UART1 {} baud, RX via UHCI DMA)",
+        radio_link::BAUD
+    );
 
     // ---- WiFi controller + network stacks ------------------------------------
     esp_println::println!("stage: wifi init");

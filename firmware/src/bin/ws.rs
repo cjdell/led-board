@@ -60,10 +60,10 @@ use defmt_tcp;
 #[cfg(feature = "defmt_rtt")]
 use defmt_rtt as _;
 
-#[cfg(feature = "defmt_tcp")]
+#[cfg(all(feature = "defmt_tcp", not(feature = "console")))]
 use panic_reset as _;
 
-#[cfg(feature = "defmt_rtt")]
+#[cfg(all(feature = "defmt_rtt", not(feature = "console")))]
 use panic_probe as _;
 
 #[unsafe(link_section = ".start_block")]
@@ -266,10 +266,23 @@ async fn main(spawner: Spawner) {
     // over UART0 (GP12 -> C3 RX, GP13 <- C3 TX). No IP stack runs on the Pico.
     #[cfg(feature = "radio")]
     let wifi_control = {
+        // Bench debug console (feature "console"): USB-CDC logs on the Pico's
+        // own port; radio builds otherwise leave USB unused.
+        #[cfg(feature = "console")]
+        {
+            let dbg_driver = usb::Driver::new(p.USB, Irqs);
+            firmware::tasks::usb_dbg::start(spawner, dbg_driver);
+            firmware::tasks::usb_dbg::log(format_args!("BOOT ws v{}", env!("CARGO_PKG_VERSION")));
+        }
         let mut uart_config = embassy_rp::uart::Config::default();
         uart_config.baudrate = firmware::tasks::radio::BAUD;
 
-        let bufs = make_static!(([u8; 1024], [u8; 4096]), ([0u8; 1024], [0u8; 4096]));
+        // RX ring: structural headroom, not a race. With the flow-control
+        // window the radio can never send more than the link protocol
+        // tolerates, so even a stalled consumer (flash-sector erase during
+        // OTA, ~30–80 ms) only closes the window upstream — nothing drops.
+        // 16 KB ≈ 170 ms of full-rate slack; keep it generous.
+        let bufs = make_static!(([u8; 16384], [u8; 4096]), ([0u8; 16384], [0u8; 4096]));
 
         let uart = embassy_rp::uart::BufferedUart::new(
             p.UART0,

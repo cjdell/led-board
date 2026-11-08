@@ -16,33 +16,56 @@ path = "src/lib.rs"
 name = "slave_radio"
 path = "src/bin/slave_radio.rs"
 
+[features]
+# Exactly one chip feature must be selected; C3 is the default so the existing
+# `just radio-*` flow keeps working. C6 builds: --no-default-features --features esp32c6
+# (and --target riscv32imac-unknown-none-elf, unlike the imc default).
+default = ["esp32c3"]
+esp32c3 = [
+    "esp-backtrace/esp32c3",
+    "esp-bootloader-esp-idf/esp32c3",
+    "esp-hal/esp32c3",
+    "esp-rtos/esp32c3",
+    "esp-println/esp32c3",
+    "esp-alloc/esp32c3",
+    "esp-radio/esp32c3",
+    "esp-storage/esp32c3",
+]
+esp32c6 = [
+    "esp-backtrace/esp32c6",
+    "esp-bootloader-esp-idf/esp32c6",
+    "esp-hal/esp32c6",
+    "esp-rtos/esp32c6",
+    "esp-println/esp32c6",
+    "esp-alloc/esp32c6",
+    "esp-radio/esp32c6",
+    "esp-storage/esp32c6",
+]
+
 [dependencies]
 radio_link = { path = "../radio_link" }
 
 esp-backtrace = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-backtrace", features = [
     "panic-handler",
-    "esp32c3",
     "println",
 ] }
-esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-bootloader-esp-idf", features = ["esp32c3"] }
-esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-hal", features = ["log-04", "unstable", "esp32c3"] }
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-bootloader-esp-idf" }
+esp-hal = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-hal", features = ["log-04", "unstable"] }
 esp-rtos = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-rtos", features = [
     "embassy",
     "esp-alloc",
     "esp-radio",
-    "esp32c3",
     "log-04",
 ] }
-esp-println = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-println", default-features = false, features = ["esp32c3", "log-04", "jtag-serial", "colors", "critical-section"] }
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-alloc", features = ["esp32c3", "nightly"] }
+esp-println = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-println", default-features = false, features = ["log-04", "jtag-serial", "colors", "critical-section"] }
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-alloc", features = ["nightly"] }
 esp-radio = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-radio", features = [
     "esp-alloc",
-    "esp32c3",
     "log-04",
     "unstable",
     "wifi",
 ] }
-esp-storage = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-storage", features = ["esp32c3"] }
+esp-storage = { git = "https://github.com/esp-rs/esp-hal.git", tag = "esp-hal-v1.1.2", package = "esp-storage" }
 
 embassy-executor = { version = "0.10.0", features = ["log"] }
 embassy-time = "0.5.1"

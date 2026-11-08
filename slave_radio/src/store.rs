@@ -36,25 +36,12 @@ pub struct StoredConfig {
 
 impl Default for StoredConfig {
     fn default() -> Self {
-        // DIAG bring-up hook: build with DIAG_SSID=[...]/DIAG_PASS=[...] to boot
-        // straight into a station join test against a real network (proves TX).
-        let diag_ssid = option_env!("DIAG_SSID");
-        let diag_pass = option_env!("DIAG_PASS").unwrap_or("");
+        // Factory: fallback AP only; saved networks arrive via the portal or
+        // the Pico's boot-sync push.
         Self {
-            networks: diag_ssid
-                .map(|ssid| {
-                    vec![Network {
-                        ssid: ssid.into(),
-                        pass: diag_pass.into(),
-                    }]
-                })
-                .unwrap_or_default(),
+            networks: Vec::new(),
             ap_ssid: String::from("LED Board"),
-            mode: if diag_ssid.is_some() {
-                RadioMode::Station
-            } else {
-                RadioMode::AccessPoint
-            },
+            mode: RadioMode::AccessPoint,
         }
     }
 }

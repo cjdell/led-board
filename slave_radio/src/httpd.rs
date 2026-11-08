@@ -10,11 +10,11 @@ use alloc::{boxed::Box, format, vec, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use embassy_executor::Spawner;
-use embassy_net::tcp::TcpSocket;
+use embassy_net::tcp::{State as TcpState, TcpSocket};
 use embassy_net::Stack;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Write as _;
 
 use crate::link;
@@ -45,7 +45,10 @@ pub fn start(spawner: &Spawner, ap_stack: Stack<'static>, sta_stack: Stack<'stat
     for _ in 0..2 {
         spawner.spawn(ap_http_task(ap_stack).unwrap());
     }
-    for _ in 0..3 {
+    // Six STA relay slots: browsers routinely open six parallel connections
+    // per host, and the Pico tunnel pool matches at TUNNEL_POOL = 6. The STA
+    // stack's socket budget (16) covers 6 acceptor sockets + mDNS + slack.
+    for _ in 0..6 {
         spawner.spawn(sta_relay_task(sta_stack).unwrap());
     }
 }
@@ -88,7 +91,7 @@ async fn ap_http_task(stack: Stack<'static>) {
             None => {}
         }
 
-        socket.close();
+        drain_close(&mut socket).await;
     }
 }
 
@@ -96,7 +99,7 @@ async fn ap_http_task(stack: Stack<'static>) {
 // STA interface: pure relay
 // ---------------------------------------------------------------------------
 
-#[embassy_executor::task(pool_size = 3)]
+#[embassy_executor::task(pool_size = 6)]
 async fn sta_relay_task(stack: Stack<'static>) {
     let rx: &'static mut [u8] = Box::leak(vec![0u8; 2048].into_boxed_slice());
     let tx: &'static mut [u8] = Box::leak(vec![0u8; 2048].into_boxed_slice());
@@ -111,13 +114,16 @@ async fn sta_relay_task(stack: Stack<'static>) {
         }
 
         if state::pico_online() {
+            log::info!("relay: STA conn, opening stream");
             relay_stream(&mut socket, Vec::new()).await;
+            log::info!("relay: STA relay done");
         } else {
+            log::info!("relay: STA conn, PICO OFFLINE -> 503");
             let body = b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
             let _ = socket.write_all(body).await;
         }
 
-        socket.close();
+        drain_close(&mut socket).await;
     }
 }
 
@@ -125,43 +131,79 @@ async fn sta_relay_task(stack: Stack<'static>) {
 // Socket ⇄ stream pump
 // ---------------------------------------------------------------------------
 
+/// Close a connection gracefully, waiting until the socket has actually
+/// finished draining before it is dropped. `TcpSocket::drop` removes the
+/// socket from the stack immediately — any bytes still queued for transmit
+/// (the tail of a response, a 503 page) are silently discarded, which
+/// presented as truncated/RST'd responses to the client.
+async fn drain_close(socket: &mut TcpSocket<'_>) {
+    socket.close();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !matches!(socket.state(), TcpState::TimeWait | TcpState::Closed) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        Timer::after_millis(25).await;
+    }
+}
+
 /// Relay one accepted connection to the Pico. `prefix` holds bytes already
 /// read from the client (the AP acceptor needs them for routing) and gets
 /// forwarded first.
+///
+/// The pump is lossless in both directions: bytes toward the Pico wait on
+/// its flow-control window (`send_stream_data` returns false only when the
+/// stream has gone), and frames toward the browser release the Pico's window
+/// with a cumulative frame-count `STREAM_ACK` once the TCP socket has taken
+/// them. A slow browser therefore pauses picoserve instead of truncating the
+/// response.
 async fn relay_stream(socket: &mut TcpSocket<'_>, prefix: Vec<u8>) {
-    let Some((id, queue)) = link::open_stream(80).await else {
+    let Some(entry) = link::open_stream(80).await else {
+        log::warn!("relay: open_stream FAILED (no slot)");
         return;
     };
-
-    if !prefix.is_empty() {
-        link::send_stream_data(id, &prefix).await;
-    }
+    let id = entry.id();
+    log::info!("relay: stream {} open, forwarding {} prefix bytes", id, prefix.len());
 
     let (mut reader, mut writer) = socket.split();
     let mut buf = [0u8; 1024];
 
-    loop {
-        let either = embassy_futures::select::select(reader.read(&mut buf), queue.receive()).await;
+    let mut alive = true;
+    if !prefix.is_empty() {
+        alive = link::send_stream_data(entry, &prefix).await;
+    }
+
+    while alive {
+        let either = embassy_futures::select::select(reader.read(&mut buf), entry.queue.receive()).await;
 
         match either {
             embassy_futures::select::Either::First(result) => match result {
                 Ok(0) | Err(_) => break,
-                Ok(n) => link::send_stream_data(id, &buf[..n]).await,
+                Ok(n) => {
+                    alive = link::send_stream_data(entry, &buf[..n]).await;
+                }
             },
             embassy_futures::select::Either::Second(payload) => {
                 if payload.is_empty() {
                     // The Pico closed the stream.
+                    log::info!("relay: stream {} closed by pico", id);
                     break;
                 }
                 if writer.write_all(&payload).await.is_err() {
                     break;
                 }
+                // The TCP socket has taken this frame: the Pico's window
+                // opens by one frame (cumulative ack — self-healing if an
+                // ack frame is ever lost).
+                link::ack_stream(id).await;
             }
         }
     }
 
     let _ = writer.flush().await;
+    log::info!("relay: stream {} done", id);
     link::close_stream(id).await;
+    link::release_stream(id);
 }
 
 // ---------------------------------------------------------------------------

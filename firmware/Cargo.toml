@@ -11,6 +11,7 @@ wifi = []
 usb_ethernet = []
 ppp = []
 radio = []
+console = []
 
 [dependencies]
 radio_link = { path = "../radio_link" }
@@ -127,6 +128,7 @@ edge-mdns = { git = "https://github.com/cjdell/edge-net.git" }
 edge-nal = { git = "https://github.com/cjdell/edge-net.git" }
 edge-nal-embassy = { git = "https://github.com/cjdell/edge-net.git" }
 edge-ws = { git = "https://github.com/cjdell/edge-net.git" }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 # edge-captive = { path = "../../edge-net/edge-captive" }
 # edge-dhcp = { path = "../../edge-net/edge-dhcp" }

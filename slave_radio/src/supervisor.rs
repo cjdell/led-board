@@ -188,15 +188,23 @@ async fn supervisor(init: SupervisorInit) {
             store.load()
         };
 
-        // ---- heartbeat (periodic live state for serial monitoring) ------
+        // ---- heartbeat (periodic live state for serial monitoring; the rx
+        // counters make a dead/glitching link obvious from one line) ------
         hb = hb.wrapping_add(1);
         if hb % 5 == 0 {
+            let (rx_bytes, rx_frames) = crate::link::rx_counters();
+            // Heap watermark: the relay path (queue Vecs, frame backlog,
+            // socket buffers) shares one heap with WiFi — the number to
+            // watch when a load run goes wrong (OOM panics once hit 0).
             log::info!(
-                "hb: mode={:?} ap_up={} joined={} pico_online={}",
+                "hb: mode={:?} ap_up={} joined={} pico_online={} rx={}b/{}f heap_free={}k (of 112k)",
                 cfg.mode,
                 ap_up,
                 joined.is_some(),
                 state::pico_online(),
+                rx_bytes,
+                rx_frames,
+                esp_alloc::HEAP.free() / 1024,
             );
         }
 
@@ -222,38 +230,6 @@ async fn supervisor(init: SupervisorInit) {
                         })
                         .await;
                         spawn_mdns(&spawner, &ap_stack, state::AP_IP);
-
-                        // ---- DIAG (temporary): prove our own beacon is on the air ----
-                        log::info!("diag: self-scan via APSTA combo");
-                        let combo = Config::AccessPointStation(
-                            StationConfig::default(),
-                            AccessPointConfig::default()
-                                .with_ssid(cfg.ap_ssid.clone())
-                                .with_auth_method(AuthenticationMethod::Wpa2Personal)
-                                .with_password("ledboard123".into()),
-                        );
-                        match controller.set_config(&combo) {
-                            Ok(()) => {
-                                Timer::after_millis(1500).await;
-                                match controller.scan_async(&ScanConfig::default()).await {
-                                    Ok(found) => {
-                                        let entries = to_scan_entries(&found);
-                                        if entries.is_empty() {
-                                            log::warn!("diag scan: EMPTY");
-                                        }
-                                        for e in entries.iter().take(12) {
-                                            log::info!(
-                                                "diag scan: '{}' rssi={}",
-                                                e.ssid,
-                                                e.signal_strength
-                                            );
-                                        }
-                                    }
-                                    Err(err) => log::warn!("diag scan err: {:?}", err),
-                                }
-                            }
-                            Err(err) => log::warn!("diag combo err: {:?}", err),
-                        }
                     }
                 }
             }
@@ -274,8 +250,41 @@ async fn supervisor(init: SupervisorInit) {
                                 retry_at = Instant::now() + CONNECTIVITY_INTERVAL;
                                 last_dns_check = Instant::now();
 
-                                if ap_up {
-                                    // Keep the AP up quietly; report as station.
+                                if ap_up && matches!(cfg.mode, RadioMode::Station) {
+                                    // The fallback AP was a stopgap: drop back to
+                                    // pure STA. The second radio interface pins
+                                    // tens of KB on a 112 KB heap (measured:
+                                    // AP+STA idles at ~9 KB free and OOM-panicked
+                                    // the relay path under a page-load burst).
+                                    // esp_wifi mode APSTA→STA keeps the STA
+                                    // association; if it ever doesn't, the
+                                    // connectivity watcher rejoins shortly.
+                                    let known = cfg.networks.iter().find(|n| n.ssid == ssid).cloned();
+                                    let mut disabled = false;
+                                    if let Some(net) = known {
+                                        let sta_only = Config::Station(
+                                            StationConfig::default()
+                                                .with_ssid(net.ssid.clone())
+                                                .with_password(net.pass.clone()),
+                                        );
+                                        match controller.set_config(&sta_only) {
+                                            Ok(()) => {
+                                                ap_up = false;
+                                                disabled = true;
+                                                log::info!("supervisor: fallback AP disabled after join");
+                                            }
+                                            Err(err) => log::warn!("supervisor: AP disable failed: {:?}", err),
+                                        }
+                                    }
+                                    if disabled {
+                                        publish(RadioMode::Station, Some(ssid.clone()), Some(ip), None, false).await;
+                                    } else {
+                                        // ApStation mode wants both up; or teardown
+                                        // failed — report honestly and keep serving.
+                                        publish(RadioMode::Station, Some(ssid.clone()), Some(ip), Some(cfg.ap_ssid.clone()), true).await;
+                                    }
+                                } else if ap_up {
+                                    // ApStation: keep the AP up quietly; report as station.
                                     publish(RadioMode::Station, Some(ssid.clone()), Some(ip), Some(cfg.ap_ssid.clone()), true).await;
                                 } else {
                                     publish(RadioMode::Station, Some(ssid.clone()), Some(ip), None, false).await;
@@ -376,6 +385,7 @@ async fn attempt_station(
 
     let Some((ssid, pass)) = target else {
         // Scan missed every saved network; that is NOT "no configured networks".
+        log::info!("supervisor: saved networks not in scan range (n={})", cfg.networks.len());
         return JoinOutcome::Failed { no_networks: false };
     };
 
@@ -402,7 +412,7 @@ async fn attempt_station(
     log::info!("supervisor: connecting to {}", ssid);
 
     match controller.connect_async().await {
-        Ok(_info) => {
+        Ok(_) => {
             // Wait for DHCP.
             sta_stack.wait_link_up().await;
 
@@ -433,17 +443,6 @@ async fn best_network(controller: &mut WifiController<'static>, networks: &[Netw
         match controller.scan_async(&ScanConfig::default()).await {
             Ok(found) => {
                 let entries = to_scan_entries(&found);
-                // ---- DIAG (temporary): raw scan visibility for antenna testing ----
-                log::info!("diag scan[{}]: {} aps", attempt, found.len());
-                for ap in found.iter().take(8) {
-                    log::info!(
-                        "diag scan[{}]: '{}' rssi={}",
-                        attempt,
-                        String::from(ap.ssid.as_str()),
-                        ap.signal_strength
-                    );
-                }
-                // ---- end DIAG ----
                 state::store_scan(entries).await;
 
                 for ap in &found {
@@ -469,12 +468,6 @@ async fn best_network(controller: &mut WifiController<'static>, networks: &[Netw
         Timer::after_millis(500).await;
     }
 
-    // ---- DIAG (temporary): outcome of network selection ----
-    match &best {
-        Some((ssid, _, rssi)) => log::info!("diag best: '{}' rssi={}", ssid, rssi),
-        None => log::info!("diag best: NO MATCH (no saved network in scan)"),
-    }
-    // ---- end DIAG ----
     best.map(|(ssid, pass, _)| (ssid, pass))
 }
 

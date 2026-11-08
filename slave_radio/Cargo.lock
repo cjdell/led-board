@@ -806,6 +806,7 @@ version = "0.22.0"
 source = "git+https://github.com/esp-rs/esp-hal.git?tag=esp-hal-v1.1.2#210eac8d035a991d452179464a684f853ff4be78"
 dependencies = [
  "document-features",
+ "object",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
@@ -831,7 +832,9 @@ dependencies = [
  "esp-metadata-generated",
  "esp-sync",
  "esp-wifi-sys-esp32c3",
+ "esp-wifi-sys-esp32c6",
  "esp32c3",
+ "esp32c6",
  "log",
 ]
 
@@ -880,6 +883,7 @@ dependencies = [
  "esp-wifi-sys-esp32s2",
  "esp-wifi-sys-esp32s3",
  "esp32c3",
+ "esp32c6",
  "heapless 0.9.3",
  "instability",
  "log",
@@ -918,6 +922,7 @@ dependencies = [
  "document-features",
  "esp-metadata-generated",
  "esp32c3",
+ "esp32c6",
 ]
 
 [[package]]
@@ -1431,6 +1436,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
