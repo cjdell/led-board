@@ -17,6 +17,9 @@ the macOS simulator are two implementations of the same system.
 default = ["defmt", "embedded-tools/defmt"]
 # Host build (macOS simulator). Forwards to the dual-target support crates.
 std = ["embedded-tools/std", "animations/std"]
+# Diagnostic builds: omit the embedded web bundle (saves ~70 KB flash so the
+# USB console stack fits the 508 K app slot). APIs stay live; `/` is a stub.
+no_web = []
 
 [dependencies]
 embedded-tools = { path = "../embedded_tools", default-features = false }

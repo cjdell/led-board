@@ -2,8 +2,12 @@ use crate::{
     config::WifiMode,
     make_static,
     tasks::{common::WifiControl, dhcp_task, mdns_task},
-    types::{EthernetSignal, EthernetSignalMessage, LedBoardConfigFile, SharedWatchdog},
+    types::{
+        DisplayWorkerMessage, DisplayWorkerSender, EthernetSignal, EthernetSignalMessage, LedBoardConfigFile,
+        SharedWatchdog,
+    },
 };
+use animations::AnimationEnum;
 use alloc::{
     format,
     string::{String, ToString as _},
@@ -129,6 +133,7 @@ pub async fn init_wifi(
     ethernet_signal: &'static EthernetSignal,
     config_file: LedBoardConfigFile,
     watchdog: SharedWatchdog,
+    display: DisplayWorkerSender,
 ) -> (Stack<'static>, WifiControl) {
     let mut rng = embassy_rp::clocks::RoscRng;
     let seed = rng.next_u64();
@@ -184,16 +189,40 @@ pub async fn init_wifi(
             led_channel.receiver(),
             config_file,
             watchdog,
+            display,
         )
         .unwrap(),
     );
 
     info!("WiFi task started");
 
+    // Do NOT park main here: the web app, playlist and heartbeat must come up
+    // whatever the network is doing (venue joins can wander for minutes).
+    // mDNS spawns itself the moment the first lease/fallback IP lands.
+    match network_ready_task(spawner, stack, trng, ethernet_signal) {
+        Ok(task) => {
+            spawner.spawn(task);
+        }
+        Err(_) => {
+            error!("could not spawn network_ready_task (pool full?)");
+        }
+    }
+
+    (stack, public_control)
+}
+
+#[embassy_executor::task]
+async fn network_ready_task(
+    spawner: Spawner,
+    stack: Stack<'static>,
+    trng: Trng<'static, TRNG>,
+    ethernet_signal: &'static EthernetSignal,
+) {
     let mut receiver = ethernet_signal.receiver().unwrap();
 
     if let EthernetSignalMessage::Connected(ip) = receiver.get().await {
         info!("WIFI GOT SIGNAL");
+        crate::tasks::usb_dbg::log(format_args!("net: first signal — mdns up ({ip})"));
         Timer::after(Duration::from_millis(1_000)).await;
 
         let task = mdns_task(stack, trng, "led-board".to_string(), ip);
@@ -207,8 +236,6 @@ pub async fn init_wifi(
             }
         }
     }
-
-    (stack, public_control)
 }
 
 #[embassy_executor::task(pool_size = 4)]
@@ -232,9 +259,10 @@ pub async fn wifi_task(
     receiver: Receiver<'static, NoopRawMutex, bool, 1>,
     config_file: LedBoardConfigFile,
     watchdog: SharedWatchdog,
+    display: DisplayWorkerSender,
 ) {
     let join_timeout = Duration::from_secs(10);
-    let dhcp_timeout = Duration::from_secs(10);
+    let dhcp_timeout = Duration::from_secs(15);
 
     // Park the handle in the shared static; every use below borrows it from
     // there so the http provisioning handlers can reach it too.
@@ -252,12 +280,30 @@ pub async fn wifi_task(
                 'station: loop {
                     for network in &config.known_wifi_networks {
                         info!("Starting WiFi connection sequence to: {}", network.ssid.as_str());
+                        // Console breadcrumb: visible over USB even when the
+                        // network (and thus defmt-TCP) is dead — this is the
+                        // venue join-forensics channel.
+                        crate::tasks::usb_dbg::log(format_args!(
+                            "wifi: joining \"{}\"...",
+                            network.ssid.as_str()
+                        ));
 
                         let start = embassy_time::Instant::now();
 
                         let mut joined = false;
+                        let mut attempts = 0u32;
+
+                        let short_ssid: String = network.ssid.chars().take(10).collect();
+                        display
+                            .try_send(DisplayWorkerMessage::Status(AnimationEnum::CenteredTitle(
+                                "wifi".to_string(),
+                                format!("{short_ssid}?"),
+                            )))
+                            .ok();
 
                         loop {
+                            attempts += 1;
+
                             watchdog.write().await.feed(Duration::from_secs(15));
 
                             let mut control_guard = WIFI_CONTROL.0.write().await;
@@ -269,6 +315,17 @@ pub async fn wifi_task(
                             {
                                 Ok(()) => {
                                     info!("Joined WiFi network: {}", network.ssid.as_str());
+                                    crate::tasks::usb_dbg::log(format_args!(
+                                        "wifi: joined \"{}\" after {} attempt(s)",
+                                        network.ssid.as_str(),
+                                        attempts
+                                    ));
+                                    display
+                                        .try_send(DisplayWorkerMessage::Status(AnimationEnum::CenteredTitle(
+                                            "wifi".to_string(),
+                                            "leased?".to_string(),
+                                        )))
+                                        .ok();
                                     let mut status = JOIN_STATUS.lock().await;
                                     status.joined_ssid = Some(network.ssid.clone());
                                     status.last_error = None;
@@ -281,9 +338,18 @@ pub async fn wifi_task(
                                     if start.elapsed() > join_timeout {
                                         JOIN_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
                                         error!("Failed to join WiFi after {} seconds: {:?}", join_timeout.as_secs(), e);
+                                        crate::tasks::usb_dbg::log(format_args!(
+                                            "wifi: GIVE UP \"{}\" after {} attempt(s): {:?}",
+                                            network.ssid.as_str(),
+                                            attempts,
+                                            e
+                                        ));
                                         break;
                                     }
                                     info!("Join attempt failed: {}, retrying...", e);
+                                    crate::tasks::usb_dbg::log(format_args!(
+                                        "wifi: attempt {attempts} failed: {e:?}"
+                                    ));
                                     Timer::after_millis(500).await;
                                 }
                             }
@@ -296,10 +362,43 @@ pub async fn wifi_task(
 
                         info!("Waiting for DHCP lease...");
 
-                        let cfg = match wait_for_config_timeout(stack, dhcp_timeout).await {
+                        // Crowded-venue APs (Leighhack) associate fine but can
+                        // take >10 s to hand out a lease. The old single 10 s
+                        // attempt dropped a healthy association and churned to
+                        // the next network — keep the association and give
+                        // DHCP three rounds of 15 s before walking away.
+                        let mut lease = None;
+                        for round in 1..=3u32 {
+                            match wait_for_config_timeout(stack, dhcp_timeout).await {
+                                Some(cfg) => {
+                                    lease = Some(cfg);
+                                    break;
+                                }
+                                None => {
+                                    error!("DHCP timeout (round {}/3), staying associated...", round);
+                                    crate::tasks::usb_dbg::log(format_args!(
+                                        "wifi: DHCP timeout, round {round}/3 (staying on)"
+                                    ));
+                                    display
+                                        .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
+                                            "wifi".to_string(),
+                                            format!("no lease {round}/3"),
+                                        )))
+                                        .ok();
+                                    JOIN_STATUS.lock().await.last_error =
+                                        Some(format!("DHCP timeout (round {round})"));
+                                }
+                            }
+                        }
+
+                        let cfg = match lease {
                             Some(cfg) => cfg,
                             None => {
                                 error!("DHCP timeout. No IP address assigned.");
+                                crate::tasks::usb_dbg::log(format_args!(
+                                    "wifi: DHCP dead after 3 rounds, leaving \"{}\"",
+                                    network.ssid.as_str()
+                                ));
                                 JOIN_STATUS.lock().await.last_error = Some("DHCP timeout".to_string());
                                 continue;
                             }
@@ -307,6 +406,8 @@ pub async fn wifi_task(
 
                         let ip = cfg.address.address();
                         info!("Connected! IP Address: {}", ip);
+                        crate::tasks::usb_dbg::log(format_args!("wifi: connected, ip {ip}"));
+                        display.try_send(DisplayWorkerMessage::StatusClear).ok();
                         JOIN_STATUS.lock().await.ip = Some(format!("{}", ip));
                         sender.send(EthernetSignalMessage::Connected(ip));
 
@@ -325,6 +426,13 @@ pub async fn wifi_task(
                             }
 
                             warn!("WiFi: link lost, starting reconnection sequence...");
+                            crate::tasks::usb_dbg::log(format_args!("wifi: link lost — reconnecting"));
+                            display
+                                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
+                                    "wifi".to_string(),
+                                    "link lost".to_string(),
+                                )))
+                                .ok();
                             break;
                         }
 
@@ -344,12 +452,28 @@ pub async fn wifi_task(
 
             watchdog.write().await.feed(Duration::from_secs(15));
 
+            crate::tasks::usb_dbg::log(format_args!("wifi: starting AP fallback (cy43 start_ap_open)..."));
+            display
+                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
+                    "wifi".to_string(),
+                    "AP mode...".to_string(),
+                )))
+                .ok();
+
             {
                 let mut control_guard = WIFI_CONTROL.0.write().await;
                 let control = control_guard.as_mut().unwrap();
 
                 control.start_ap_open("LED Board", 5).await;
             }
+
+            crate::tasks::usb_dbg::log(format_args!("wifi: AP fallback \"LED Board\" up (192.168.1.1)"));
+            display
+                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
+                    "AP: LED Board".to_string(),
+                    "192.168.1.1".to_string(),
+                )))
+                .ok();
 
             JOIN_STATUS.lock().await.ap_fallback = true;
 

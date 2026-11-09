@@ -1,6 +1,6 @@
 use crate::board::{Board, OtaBackend, OtaWriter};
 use alloc::{boxed::Box, string::ToString, vec::Vec};
-use embedded_tools::info;
+use embedded_tools::{error, info, Debug2Format};
 use miniz_oxide::inflate::stream::{InflateState, inflate as mz_inflate};
 use miniz_oxide::{DataFormat, MZFlush};
 use picoserve::{
@@ -61,6 +61,7 @@ where
         let expected_sha256 = sum_str.to_string();
 
         info!("expected_sha256 = {}", expected_sha256.as_str());
+        info!("OTA upload starting (compressed = {})", compressed);
 
         let mut infl = compressed.then(|| Box::new(InflateState::new(DataFormat::Raw)));
 
@@ -112,6 +113,9 @@ where
                         return format_response!(request, response_writer, "Could not write flash: {err:?}\r\n");
                     }
                     total_size += 4096;
+                    if total_size % 65536 == 0 {
+                        info!("OTA progress: {} bytes", total_size);
+                    }
                     pending.drain(..4096);
                 }
 
@@ -158,11 +162,14 @@ where
             }
         }
 
-        info!("Done writing");
+        info!("OTA wrote {} bytes — finalising (hash verify)...", total_size);
 
         if let Err(err) = ota.finalise() {
+            error!("OTA verification FAILED after {} bytes: {}", total_size, Debug2Format(&err));
             return format_response!(request, response_writer, "Verification Error: {err:?}\r\n");
         }
+
+        info!("OTA verified — rebooting into new image (Total Size: {})", total_size);
 
         return format_response!(request, response_writer, "Total Size: {total_size}\r\nWill reboot...");
     }

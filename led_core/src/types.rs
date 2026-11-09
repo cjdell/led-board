@@ -47,11 +47,18 @@ pub enum DisplayWorkerMessage {
     PowerLimit(f32),
     ParamsBuffer(Vec<AnimationParams>),
     FrameBuffer(Vec<Rgb888>),
+    /// Show `animation` over the playlist until StatusClear — the board
+    /// reads its own state (join progress, AP fallback, link lost).
+    Status(AnimationEnum),
+    /// Leave status-screen mode; the playlist resumes.
+    StatusClear,
 }
 
-pub type DisplayWorkerChannel = Channel<CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
-pub type DisplayWorkerSender = channel::Sender<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
-pub type DisplayWorkerReceiver = channel::Receiver<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
+// Capacity 4: the status screens + playlist swaps must never block a
+// producer task (main / pump) — worst case a stale frame command drops.
+pub type DisplayWorkerChannel = Channel<CriticalSectionRawMutex, DisplayWorkerMessage, 4>;
+pub type DisplayWorkerSender = channel::Sender<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 4>;
+pub type DisplayWorkerReceiver = channel::Receiver<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 4>;
 
 pub type ActivityWatch = Watch<CriticalSectionRawMutex, u64, 1>;
 pub type ActivityWatchSender = watch::Sender<'static, CriticalSectionRawMutex, u64, 1>;

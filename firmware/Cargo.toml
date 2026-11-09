@@ -12,6 +12,9 @@ usb_ethernet = []
 ppp = []
 radio = []
 console = []
+# Diagnostic builds: drop the embedded web bundle so `wifi,console` fits the
+# 508 K app slot.
+no_web = ["led-core/no_web"]
 
 [dependencies]
 radio_link = { path = "../radio_link" }

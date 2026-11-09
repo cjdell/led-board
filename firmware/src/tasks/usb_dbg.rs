@@ -1,7 +1,13 @@
-//! Bench-only debug console: logs to a USB-CDC serial port on the Pico's own
-//! USB connector, plus a panic handler that reports the panic to the ring
-//! before halting. Enabled with the `console` feature (radio builds only —
-//! nothing else leaves USB free).
+//! Bench debug console: a USB-CDC text port on the Pico's own USB connector,
+//! plus a panic handler that reports the panic to the ring before halting.
+//! Enabled with the `console` feature (radio builds always; wifi builds opt
+//! in — `wifi,console` — since the cyw43 link is the thing being debugged and
+//! USB is otherwise unused).
+//!
+//! On builds with `console` but no TCP/RTT defmt logger, this module also
+//! provides the global defmt logger, streamed raw onto a **second** CDC port
+//! so `defmt-print serial` sees a clean binary frame stream while the first
+//! port keeps human-readable text lines.
 //!
 //! Intentionally allocation-free: a fixed static ring of short lines is
 //! drained to the host when a terminal attaches (opening the port does NOT
@@ -14,6 +20,8 @@ use embassy_executor::Spawner;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::Driver;
 use embassy_sync::blocking_mutex::{Mutex as BlockingMutex, raw::CriticalSectionRawMutex};
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Instant, Timer};
 use embassy_usb::control::{OutResponse, Recipient, Request, RequestType};
 use embassy_usb::types::InterfaceNumber;
@@ -76,19 +84,119 @@ impl Ring {
         self.produced = self.produced.wrapping_add(1);
     }
 
-    /// Copy out the message with sequence `seen`, if still buffered.
-    fn get(&self, seen: u32) -> Option<Msg> {
+    /// Copy out the message with sequence `*seen`, if still buffered.
+    ///
+    /// If the reader lags behind the ring window (the host attached late and
+    /// the producer wrapped), `*seen` is snapped forward to the oldest buffered
+    /// message: those lines are lost, but the stream keeps flowing. Without
+    /// this, a single overflow wedged the console for the rest of the boot —
+    /// every later line was invisible (seen: silent console after "pl:").
+    fn get(&self, seen: &mut u32) -> Option<Msg> {
         let oldest = self.produced.wrapping_sub(RING_CAP as u32);
-        if self.produced == seen || seen.wrapping_sub(oldest) >= RING_CAP as u32 {
-            return None;
+        if seen.wrapping_sub(oldest) >= RING_CAP as u32 {
+            if *seen == self.produced {
+                return None;
+            }
+            *seen = oldest;
         }
-        Some(self.msgs[(seen % RING_CAP as u32) as usize].clone())
+        let msg = self.msgs[(*seen % RING_CAP as u32) as usize].clone();
+        Some(msg)
     }
 }
 
 // Sync (blocking_mutex + critical section) so log() is callable from panic
 // context and plain sync functions. Never hold across an await.
 static RING: BlockingMutex<CriticalSectionRawMutex, RefCell<Ring>> = BlockingMutex::new(RefCell::new(Ring::NEW));
+
+// ---------------------------------------------------------------------------
+// defmt global logger over USB-CDC (`console` builds without defmt_tcp /
+// defmt_rtt, e.g. `wifi,console`). Encoded frames go to a byte ring drained
+// onto a dedicated second CDC port; defmt-print re-syncs on frame headers,
+// so overflow may skip lines but never corrupts the stream permanently.
+// Mirrors the structure of the defmt_tcp crate.
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+const FRAME_RING_CAP: usize = 4096;
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+struct FrameRing {
+    buf: [u8; FRAME_RING_CAP],
+    head: usize,
+    tail: usize,
+}
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+impl FrameRing {
+    const NEW: Self = Self {
+        buf: [0; FRAME_RING_CAP],
+        head: 0,
+        tail: 0,
+    };
+
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            let next = (self.head + 1) % FRAME_RING_CAP;
+            if next == self.tail {
+                // Ring full: drop oldest byte. Losing frame middles is fine —
+                // defmt-print skips what it can't parse.
+                self.tail = (self.tail + 1) % FRAME_RING_CAP;
+            }
+            self.buf[self.head] = b;
+            self.head = next;
+        }
+    }
+
+    fn pop(&mut self, out: &mut [u8]) -> usize {
+        let mut n = 0;
+        while n < out.len() && self.tail != self.head {
+            out[n] = self.buf[self.tail];
+            self.tail = (self.tail + 1) % FRAME_RING_CAP;
+            n += 1;
+        }
+        n
+    }
+}
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+static FRAMES: BlockingMutex<CriticalSectionRawMutex, RefCell<FrameRing>> =
+    BlockingMutex::new(RefCell::new(FrameRing::NEW));
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+#[defmt::global_logger]
+struct UsbLogger;
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+unsafe impl defmt::Logger for UsbLogger {
+    fn acquire() {
+        let mut encoder = match DEFMT_ENCODER.try_write() {
+            Ok(encoder) => encoder,
+            Err(_) => return,
+        };
+        encoder.start_frame(|bytes| FRAMES.lock(|f| f.borrow_mut().push(bytes)));
+    }
+
+    unsafe fn flush() {}
+
+    unsafe fn release() {
+        let mut encoder = match DEFMT_ENCODER.try_write() {
+            Ok(encoder) => encoder,
+            Err(_) => return,
+        };
+        encoder.end_frame(|bytes| FRAMES.lock(|f| f.borrow_mut().push(bytes)));
+    }
+
+    unsafe fn write(bytes: &[u8]) {
+        let mut encoder = match DEFMT_ENCODER.try_write() {
+            Ok(encoder) => encoder,
+            Err(_) => return,
+        };
+        encoder.write(bytes, |bytes| FRAMES.lock(|f| f.borrow_mut().push(bytes)));
+    }
+}
+
+#[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+static DEFMT_ENCODER: RwLock<CriticalSectionRawMutex, defmt::Encoder> = RwLock::new(defmt::Encoder::new());
 
 /// Pico SDK stdio-USB "reset" interface (class 0xFF, subclass 0x00, protocol
 /// 0x01). picotool (>= 2.0) scans every device's config descriptor for this
@@ -148,6 +256,32 @@ pub fn log(args: fmt::Arguments) {
     }
 }
 
+/// Current boot stage. The console task reports it in its heartbeat, so a boot
+/// that stalls (or a task that dies) still shows exactly how far the machine
+/// got — the console task lives on the main executor; if it stops beating, the
+/// whole core is gone, not just one subsystem.
+#[cfg(feature = "console")]
+static STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Mark a boot milestone: records the stage number for the heartbeat and logs
+/// the named line.
+pub fn stage(n: u8, what: &str) {
+    #[cfg(feature = "console")]
+    {
+        STAGE.store(n, core::sync::atomic::Ordering::Relaxed);
+        log(format_args!("stage {n}: {what}"));
+    }
+    #[cfg(not(feature = "console"))]
+    {
+        let _ = (n, what);
+    }
+}
+
+#[cfg(feature = "console")]
+fn stage_now() -> u8 {
+    STAGE.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Start the console task. Must be called exactly once, with the USB
 /// peripheral driver (radio builds leave USB otherwise unused).
 pub fn start(spawner: Spawner, driver: Driver<'static, USB>) {
@@ -192,6 +326,14 @@ async fn console_task(driver: Driver<'static, USB>) {
     static CDC_STATE: StaticCell<cdc_acm::State<'static>> = StaticCell::new();
     let mut cdc = cdc_acm::CdcAcmClass::new(&mut builder, CDC_STATE.init(cdc_acm::State::new()), 64);
 
+    // Second CDC port: raw defmt frame stream (see UsbLogger). Only present
+    // on builds where this module is the defmt logger, so existing bench
+    // tooling sees the same single port on `radio,defmt_tcp,console`.
+    #[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+    static DEFMT_CDC_STATE: StaticCell<cdc_acm::State<'static>> = StaticCell::new();
+    #[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+    let mut defmt_cdc = cdc_acm::CdcAcmClass::new(&mut builder, DEFMT_CDC_STATE.init(cdc_acm::State::new()), 64);
+
     // Button-free reboots: zero-endpoint vendor interface + control handler
     // (see ResetIface). Must be registered before build().
     let mut func = builder.function(0xff, 0x00, 0x01);
@@ -206,22 +348,38 @@ async fn console_task(driver: Driver<'static, USB>) {
 
     let mut usb = builder.build();
 
+    // Single CDC handle on purpose: `split()` + a concurrent read_packet()
+    // deadlocked the class state (the reader holds shared state across its
+    // await, which starves usb.run() and hangs the whole executor).
+    // Button-free reflash uses the vendor reset interface (ResetIface) or the
+    // BOOTSEL button path instead of a serial command.
+
     let mut seen: u32 = 0;
+    let boot_t = Instant::now();
+    let mut last_beat = Instant::now();
     let drain = async {
         loop {
             Timer::after(Duration::from_millis(50)).await;
-            // DTR reflects the host terminal open/close (SET_CONTROL_LINE_STATE).
-            // `wait_connection` keys on endpoint ENABLE, which survives a plain
-            // port close — it cannot resync us after the host disappears.
-            if !cdc.dtr() {
-                continue;
+            // No DTR gate on purpose: macOS does not reliably raise DTR on
+            // open (the CDC driver here never sends SET_CONTROL_LINE_STATE),
+            // which made every boot read as a totally silent console. Writes
+            // are bounded below, so a detached host costs one 500 ms timeout
+            // per message and nothing else.
+            //
+            // Liveness beat: uptime + how far boot got. A late attacher sees
+            // these immediately, so "board is up but stuck at stage N" and
+            // "board reset-looping" are distinguishable from the first read.
+            if last_beat.elapsed() >= Duration::from_secs(2) {
+                last_beat = Instant::now();
+                log(format_args!(
+                    "hb: up {}s stage {}",
+                    boot_t.elapsed().as_secs(),
+                    stage_now()
+                ));
             }
             loop {
-                let msg = RING.lock(|r| r.borrow().get(seen));
+                let msg = RING.lock(|r| r.borrow_mut().get(&mut seen));
                 let Some(m) = msg else { break };
-                if !cdc.dtr() {
-                    break; // host vanished mid-drain
-                }
                 // Bounded write: if the IN buffer is stuck full (host left
                 // without consuming), the write never completes — drop it via
                 // the timeout (the endpoint write future is cancel-safe: the
@@ -238,10 +396,7 @@ async fn console_task(driver: Driver<'static, USB>) {
                     }
                     embassy_futures::select::Either::First(_) => break,
                     embassy_futures::select::Either::Second(()) => {
-                        if !cdc.dtr() {
-                            break;
-                        }
-                        // Host present but not draining (rare): retry this
+                        // No host listening (or a stalled IN slot): retry this
                         // message — it was never loaded, so no duplicates.
                     }
                 }
@@ -249,17 +404,56 @@ async fn console_task(driver: Driver<'static, USB>) {
         }
     };
 
-    // usb.run() pumps the controller; drain feeds it lines.
+    #[cfg(all(feature = "console", not(feature = "defmt_tcp"), not(feature = "defmt_rtt")))]
+    let drain = {
+        let defmt_drain = async {
+            let mut chunk = [0u8; 64];
+            let mut pending = 0usize;
+            loop {
+                Timer::after(Duration::from_millis(20)).await;
+                if !defmt_cdc.dtr() {
+                    pending = 0; // host gone: drop the un-sent chunk
+                    continue;
+                }
+                if pending == 0 {
+                    pending = FRAMES.lock(|f| f.borrow_mut().pop(&mut chunk));
+                    if pending == 0 {
+                        continue;
+                    }
+                }
+                match embassy_futures::select::select(
+                    defmt_cdc.write_packet(&chunk[..pending]),
+                    Timer::after(Duration::from_millis(500)),
+                )
+                .await
+                {
+                    embassy_futures::select::Either::First(_) => pending = 0,
+                    embassy_futures::select::Either::Second(()) => {
+                        if !defmt_cdc.dtr() {
+                            pending = 0;
+                        }
+                        // else: host present but endpoint busy — retry same chunk
+                    }
+                }
+            }
+        };
+        embassy_futures::join::join(drain, defmt_drain)
+    };
+
+    // usb.run() pumps the controller; drain feeds it lines (and, on logger
+    // builds, the defmt frame stream on the second CDC port); commands reads
+    // host requests from the same port.
     embassy_futures::join::join(usb.run(), drain).await;
 }
 
-/// Panic handler for `console` builds: report, then halt (no reset — the
-/// console keeps the evidence; unplug/replug to retry).
+/// Panic handler for `console` builds: report to the ring, then reset. The
+/// board re-enters the boot sequence, and a host attached to the console
+/// sees the panic line followed by a full breadcrumb replay of the new boot
+/// — field-deployable panic forensics without needing a live executor to
+/// drain the ring (the executor is dying when this runs).
 #[cfg(feature = "console")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log(format_args!("*** PANIC: {}", info));
-    loop {
-        cortex_m::asm::wfi();
-    }
+    cortex_m::peripheral::SCB::sys_reset()
 }

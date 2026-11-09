@@ -5,7 +5,7 @@
 //! screen through [`Ws2812ParallelDriver`].
 
 use alloc::boxed::Box;
-use animations::{AnimationRunner, BufferTarget, Playlist, apply_power_limit};
+use animations::{Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit};
 use embedded_graphics::pixelcolor::Rgb888;
 
 use crate::info;
@@ -28,6 +28,9 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     let mut last_time = embassy_time::Instant::now();
 
     let mut power_limit = 0.1f32;
+    // Status-screen mode: when set, the animation is drawn over the still
+    // advancing playlist until StatusClear (see DisplayWorkerMessage).
+    let mut status_screen: Option<(AnimationEnum, u32)> = None;
 
     loop {
         let now = embassy_time::Instant::now();
@@ -69,10 +72,23 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
                         i += 1;
                     }
                 }
+                DisplayWorkerMessage::Status(animation) => {
+                    info!("Status screen");
+                    status_screen = Some((animation, 0));
+                }
+                DisplayWorkerMessage::StatusClear => {
+                    info!("Status cleared");
+                    status_screen = None;
+                }
             }
         }
 
         runner.update(delta_ms, &mut buffer_1, &mut buffer_2);
+
+        if let Some((animation, ms)) = status_screen.as_mut() {
+            *ms += delta_ms;
+            animation.draw(*ms, &AnimationParams::default(), &mut buffer_1);
+        }
 
         apply_power_limit(&mut buffer_1, power_limit);
 

@@ -12,6 +12,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 
 use crate::config::DEFAULT_PLAYLIST_FILENAME;
 use crate::error;
+use embedded_tools::{info, warn};
 use crate::types::{
     DisplayWorkerMessage, DisplayWorkerSender, WebSocketIncomingMessage, WebSocketIncomingReceiver,
 };
@@ -35,12 +36,15 @@ pub async fn run<F: LocalFsTrait + Clone>(
                     .map(|chunk| Rgb888::new(chunk[0], chunk[1], chunk[2]))
                     .collect::<alloc::vec::Vec<Rgb888>>();
 
-                display.send(DisplayWorkerMessage::FrameBuffer(pixels)).await;
+                // Streaming paths: drop instead of blocking the pump when the
+                // display queue is saturated (new frames supersede old ones).
+                let _ = display.try_send(DisplayWorkerMessage::FrameBuffer(pixels));
             }
             WebSocketIncomingMessage::Next => {
                 display.send(DisplayWorkerMessage::Next).await;
             }
             WebSocketIncomingMessage::Animation(animation_enum, length_ms) => {
+                info!("preview animation for {} ms (playlist paused behind it)", length_ms);
                 display.send(DisplayWorkerMessage::Animation(animation_enum, length_ms)).await;
             }
             WebSocketIncomingMessage::Playlist { playlist, save } => {
@@ -48,16 +52,20 @@ pub async fn run<F: LocalFsTrait + Clone>(
                     match serde_json::to_string(&playlist) {
                         Ok(json) => {
                             let _ = local_fs.write_text_file(DEFAULT_PLAYLIST_FILENAME, json).await;
+                            info!("playlist saved to flash: {} item(s)", playlist.len());
                         }
                         Err(err) => {
                             error!("Could not serialise playlist JSON: {}", Debug2Format(&err));
                         }
                     }
+                } else {
+                    info!("playlist loaded (live only, {} item(s))", playlist.len());
                 }
 
                 display.send(DisplayWorkerMessage::Playlist(playlist)).await;
             }
             WebSocketIncomingMessage::Reset => {
+                warn!("playlist RESET — deleting saved file, built-in default resumes");
                 if let Err(err) = local_fs.delete(DEFAULT_PLAYLIST_FILENAME).await {
                     error!("Could not delete playlist JSON: {}", Debug2Format(&err));
                 }
@@ -70,7 +78,7 @@ pub async fn run<F: LocalFsTrait + Clone>(
                     .map(|chunk| AnimationParams::new(chunk[0], chunk[1], chunk[2], chunk[3]))
                     .collect::<alloc::vec::Vec<AnimationParams>>();
 
-                display.send(DisplayWorkerMessage::ParamsBuffer(params_buffer)).await;
+                let _ = display.try_send(DisplayWorkerMessage::ParamsBuffer(params_buffer));
             }
             WebSocketIncomingMessage::PowerLimit(power_limit) => {
                 display.send(DisplayWorkerMessage::PowerLimit(power_limit)).await;

@@ -236,6 +236,14 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
 
 impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs2812ParallelDriver<'_, P, 0, N_LEDS> {
     async fn write(&mut self, colors: &[[RGB8; N_LEDS]; N_STRIPS]) {
+        // Bench breadcrumbs: "begin #1" without "done #1" = the first PIO/DMA
+        // push hung; frames stopping mid-count = core1 died mid-stream.
+        static WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let frame = WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if frame == 0 {
+            crate::tasks::usb_dbg::log(format_args!("disp: write #1 begin"));
+        }
+
         // --- Phase 1: Transpose colors into bit-columns ---
         // Unroll the bit loop entirely for the common N_STRIPS <= 8 case.
         // Precompute GRB for all strips of the current LED in registers,
@@ -312,5 +320,9 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
         // }
 
         self.sm.tx().dma_push(&mut self.dma, &self.dma_buf, false).await;
+
+        if frame < 3 || (frame + 1) % 1000 == 0 {
+            crate::tasks::usb_dbg::log(format_args!("disp: write #{} done", frame + 1));
+        }
     }
 }

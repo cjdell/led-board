@@ -30,7 +30,7 @@ use embassy_rp::{
 use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap as Heap;
-use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
+use embedded_tools::config::{ConfigFile, ConfigFileTrait, storage::LocalFsConfigFileStorage};
 use embedded_tools::local_fs::LocalFsTrait as _;
 use firmware::{
     board::ActiveBoard,
@@ -137,6 +137,8 @@ async fn main(spawner: Spawner) {
     let display_worker_sender = display_worker_channel.sender();
     let display_worker_receiver = display_worker_channel.receiver();
 
+    firmware::tasks::usb_dbg::stage(2, "spawning core1 display");
+
     spawn_core1(
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
@@ -145,6 +147,25 @@ async fn main(spawner: Spawner) {
             executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(ws2812, display_worker_receiver))));
         },
     );
+
+    // Bench debug console (feature "console"): USB-CDC port + breadcrumb ring.
+    // Started AFTER spawn_core1 — a console that initializes the USB PHY
+    // before core1 comes off reset breaks the core1 handoff (observed on the
+    // venue bench: display worker never spawned).
+    // (usb_ethernet/ppp builds own p.USB for networking; they get no console.)
+    #[cfg(all(feature = "console", not(feature = "usb_ethernet"), not(feature = "ppp")))]
+    {
+        let dbg_driver = usb::Driver::new(p.USB, Irqs);
+        firmware::tasks::usb_dbg::start(spawner, dbg_driver);
+        firmware::tasks::usb_dbg::stage(
+            1,
+            &alloc::format!(
+                "BOOT ws v{} [{}]",
+                env!("CARGO_PKG_VERSION"),
+                if cfg!(feature = "radio") { "radio" } else if cfg!(feature = "wifi") { "wifi" } else { "?" }
+            ),
+        );
+    }
 
     info!("Init!");
 
@@ -210,7 +231,17 @@ async fn main(spawner: Spawner) {
     )
     .await;
 
+    {
+        let cfg_data = config_file.get_data().await;
+        firmware::tasks::usb_dbg::log(format_args!(
+            "fs mounted; cfg: mode {:?} networks {}",
+            defmt::Debug2Format(&cfg_data.wifi_mode),
+            cfg_data.known_wifi_networks.len()
+        ));
+    }
+
     info!("Starting Network...");
+    firmware::tasks::usb_dbg::stage(3, "starting network");
 
     #[cfg(feature = "wifi")]
     let (stack, wifi_control) = {
@@ -222,6 +253,7 @@ async fn main(spawner: Spawner) {
             ethernet_signal,
             config_file.clone(),
             watchdog.clone(),
+            display_worker_channel.sender(),
         )
         .await
     };
@@ -254,14 +286,6 @@ async fn main(spawner: Spawner) {
     // over UART0 (GP12 -> C3 RX, GP13 <- C3 TX). No IP stack runs on the Pico.
     #[cfg(feature = "radio")]
     let _wifi_control = {
-        // Bench debug console (feature "console"): USB-CDC logs on the Pico's
-        // own port; radio builds otherwise leave USB unused.
-        #[cfg(feature = "console")]
-        {
-            let dbg_driver = usb::Driver::new(p.USB, Irqs);
-            firmware::tasks::usb_dbg::start(spawner, dbg_driver);
-            firmware::tasks::usb_dbg::log(format_args!("BOOT ws v{}", env!("CARGO_PKG_VERSION")));
-        }
         let mut uart_config = embassy_rp::uart::Config::default();
         uart_config.baudrate = firmware::tasks::radio::BAUD;
 
@@ -318,6 +342,9 @@ async fn main(spawner: Spawner) {
 
         if embassy_time::with_timeout(Duration::from_secs(30), wait).await.is_err() {
             warn!("No network signal yet — continuing; the radio link can come up later");
+            firmware::tasks::usb_dbg::stage(4, "net: 30s no signal yet, pressing on");
+        } else {
+            firmware::tasks::usb_dbg::stage(4, "net: signal up");
         }
 
         Timer::after(Duration::from_millis(1_000)).await;
@@ -345,17 +372,28 @@ async fn main(spawner: Spawner) {
         Ok(json) => {
             match serde_json::from_str::<Vec<(AnimationEnum, u32)>>(&json) {
                 Ok(playlist_data) => {
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::Playlist(playlist_data))
-                        .await;
+                    firmware::tasks::usb_dbg::stage(
+                        5,
+                        &alloc::format!("pl: {} items from saved playlist", playlist_data.len()),
+                    );
+                    // Non-blocking: a wedged display worker must never stall
+                    // boot (this cost us the whole venue evening when the
+                    // capacity-1 queue filled and core1 stopped consuming).
+                    if display_worker_sender
+                        .try_send(DisplayWorkerMessage::Playlist(playlist_data))
+                        .is_err()
+                    {
+                        error!("display queue full at boot — playlist not applied (stale worker?)");
+                    }
                 }
                 Err(err) => {
                     error!("Could not read default playlist: {}", defmt::Debug2Format(&err));
+                    firmware::tasks::usb_dbg::log(format_args!("pl: saved playlist CORRUPT"));
                 }
             };
         }
-        Err(err) => {
-            error!("Could not read default playlist: {}", defmt::Debug2Format(&err));
+        Err(_) => {
+            firmware::tasks::usb_dbg::log(format_args!("pl: no saved playlist, using built-in default"));
         }
     };
 
@@ -373,11 +411,14 @@ async fn main(spawner: Spawner) {
 
     #[cfg(not(feature = "radio"))]
     {
+        firmware::tasks::usb_dbg::stage(6, "app: building router");
         let app = http::build_app(app_props);
 
         for id in 0..http::WEB_TASK_POOL_SIZE {
             spawner.spawn(web_task(id, stack, app).unwrap());
         }
+
+        firmware::tasks::usb_dbg::stage(7, &alloc::format!("app: {} web tasks spawned", http::WEB_TASK_POOL_SIZE));
     }
 
     // Relay-served app: publish the router before any stream is accepted.
@@ -412,11 +453,15 @@ async fn main(spawner: Spawner) {
         }
     };
 
+    firmware::tasks::usb_dbg::stage(8, "boot: complete — pump+animation loop running");
+
     join(ws_fut, animation_fut).await;
 }
 
 #[embassy_executor::task]
 async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, receiver: DisplayWorkerReceiver) {
+    firmware::tasks::usb_dbg::stage(9, "core1: display worker starting");
+
     let led_screen = LedScreen::new(ws2812);
 
     display::run(receiver, led_screen).await;

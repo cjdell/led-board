@@ -10,7 +10,15 @@ use picoserve::{
 // The `.rodata.mydata` placement is a Pico link-layout hint only.
 #[cfg_attr(not(feature = "std"), unsafe(link_section = ".rodata.mydata"))]
 #[used]
+#[cfg(not(feature = "no_web"))]
 static HTML_DATA: &[u8] = include_bytes!("../../../../web/bundle/index.html.gz");
+
+/// Diagnostic builds (`no_web`): the ~70 KB gzipped SPA does not coexist
+/// with the USB console stack in the 508 K app slot. This placeholder keeps
+/// `/` responsive (the JSON APIs stay live) without the bundle.
+#[cfg(feature = "no_web")]
+#[used]
+static HTML_DATA: &[u8] = b"LED board diagnostic build: web UI compiled out (no_web). Logs stream on the USB console.";
 
 pub struct CustomNotFound;
 
@@ -43,7 +51,13 @@ pub fn redirect_home_response() -> impl IntoResponse {
 }
 
 pub fn html_app_response() -> impl IntoResponse {
-    Response::new(StatusCode::OK, HtmlApp).with_headers([("Content-Encoding", "gzip")])
+    // The real bundle is gzip-encoded; the `no_web` placeholder is plain
+    // bytes, so it must not claim a gzip encoding.
+    #[cfg(not(feature = "no_web"))]
+    let resp = Response::new(StatusCode::OK, HtmlApp).with_headers([("Content-Encoding", "gzip")]);
+    #[cfg(feature = "no_web")]
+    let resp = Response::new(StatusCode::OK, HtmlApp);
+    resp
 }
 
 pub fn cors_options_response<'a>() -> impl IntoResponse + use<'a> {

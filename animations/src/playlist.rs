@@ -31,35 +31,72 @@ impl Playlist {
             AnimationEnum::OctopusOfSound,
             AnimationEnum::MagneticField,
             AnimationEnum::SilentDancer,
+            AnimationEnum::CenteredTitle("Title".to_string(), "Line".to_string()),
+            AnimationEnum::StatusCard("Alert".to_string(), "Line".to_string()),
+            AnimationEnum::Aurora,
+            AnimationEnum::Starfield,
+            AnimationEnum::Snowfall,
+            AnimationEnum::FallingLeaves,
+            AnimationEnum::Fireflies,
+            AnimationEnum::VinylSpin,
+            AnimationEnum::CanalBoats,
         ]
     }
 
+    /// Leigh Lights parade loop (Nov 2026): four lantern sections, each led by
+    /// a gold title card, framed by the "Light Up Leigh" scroll. One loop ≈ 4
+    /// minutes. Hardcoded so the board boots straight into it with no playlist
+    /// file on flash (delete `playlist_default.json` / "Reset" to reach it).
     pub fn get_default_playlist_data() -> Vec<(AnimationEnum, u32)> {
-        let length_ms = 10_000;
-
         vec![
+            // ── Banner ────────────────────────────────────────────────────
             (
-                AnimationEnum::ScrollingMessage("Welcome to Leigh Hackspace!".to_string()),
-                length_ms,
+                AnimationEnum::ScrollingMessage("Light Up Leigh with Leigh Hackspace".to_string()),
+                14_000,
             ),
-            (AnimationEnum::EchoOfTheSoul, length_ms),
-            (AnimationEnum::HarmonicSpiral, length_ms),
-            (AnimationEnum::OctopusOfSound, length_ms),
-            (AnimationEnum::SilentDancer, length_ms),
-            (AnimationEnum::MagneticField, length_ms),
-            (AnimationEnum::Fireworks, length_ms),
-            (AnimationEnum::SynthWave, length_ms),
-            (AnimationEnum::BarChart, length_ms),
-            (AnimationEnum::Intensity, length_ms),
-            (AnimationEnum::Ship, length_ms),
-            (AnimationEnum::Circles, length_ms),
+            // ── Section 1: Natures Magic (robins, leaves, owls, deer) ─────
             (
-                AnimationEnum::TwoLineMessage("Leigh".to_string(), "Hack".to_string()),
-                length_ms,
+                AnimationEnum::CenteredTitle("Natures".to_string(), "Magic".to_string()),
+                5_000,
             ),
-            (AnimationEnum::Rainbows, length_ms),
-            (AnimationEnum::SpinningCube, length_ms),
-            (AnimationEnum::RainbowWheel, length_ms),
+            (AnimationEnum::FallingLeaves, 15_000),
+            (AnimationEnum::Fireflies, 16_000),
+            (AnimationEnum::EchoOfTheSoul, 12_000),
+            // ── Section 2: Awe and Wonder (stars, snow, frost fairies) ────
+            (
+                AnimationEnum::CenteredTitle("Awe and".to_string(), "Wonder".to_string()),
+                5_000,
+            ),
+            (AnimationEnum::Starfield, 14_000),
+            (AnimationEnum::Snowfall, 16_000),
+            (AnimationEnum::Fireworks, 12_000),
+            (AnimationEnum::Rainbows, 12_000),
+            // ── Section 3: Northern Lights (aurora, music, running) ───────
+            (
+                AnimationEnum::CenteredTitle("Northern".to_string(), "Lights".to_string()),
+                5_000,
+            ),
+            (AnimationEnum::Aurora, 20_000),
+            (AnimationEnum::VinylSpin, 12_000),
+            (AnimationEnum::SynthWave, 12_000),
+            (AnimationEnum::SilentDancer, 12_000),
+            // ── Section 4: Heritage in Motion (canal, circus, mills) ──────
+            (
+                AnimationEnum::CenteredTitle("Heritage".to_string(), "in Motion".to_string()),
+                5_000,
+            ),
+            (AnimationEnum::CanalBoats, 16_000),
+            (AnimationEnum::SpinningCube, 12_000),
+            (AnimationEnum::Circles, 12_000),
+            // ── Close ─────────────────────────────────────────────────────
+            (
+                AnimationEnum::CenteredTitle("Leigh".to_string(), "Hackspace".to_string()),
+                6_000,
+            ),
+            (
+                AnimationEnum::ScrollingMessage("Light Up Leigh with Leigh Hackspace".to_string()),
+                14_000,
+            ),
         ]
     }
 

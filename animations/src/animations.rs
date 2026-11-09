@@ -1,6 +1,6 @@
 use crate::TOTAL_PIXELS;
 use crate::common::{Animation, AnimationParams, BufferTarget, BufferTargetRgb888, CloneableAnimation, HEIGHT, WIDTH};
-use crate::draw::{draw_circle_filled, draw_line, draw_rect_filled};
+use crate::draw::{draw_circle, draw_circle_filled, draw_line, draw_rect_filled, draw_triangle_filled};
 use alloc::{
     boxed::Box,
     string::{String, ToString as _},
@@ -9,7 +9,10 @@ use core::{f32::consts::PI, primitive::f32};
 use embedded_graphics::{
     Drawable as _,
     geometry::Point,
-    mono_font::{MonoTextStyle, ascii::FONT_10X20},
+    mono_font::{
+        MonoTextStyle, MonoTextStyleBuilder,
+        ascii::{FONT_10X20, FONT_6X12},
+    },
     pixelcolor::{Rgb888, RgbColor},
     primitives::{Circle, Primitive as _, PrimitiveStyle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
@@ -39,6 +42,15 @@ pub enum AnimationEnum {
     OctopusOfSound,
     MagneticField,
     SilentDancer,
+    CenteredTitle(String, String),
+    StatusCard(String, String),
+    Aurora,
+    Starfield,
+    Snowfall,
+    FallingLeaves,
+    Fireflies,
+    VinylSpin,
+    CanalBoats,
 }
 
 impl Animation for AnimationEnum {
@@ -46,6 +58,381 @@ impl Animation for AnimationEnum {
         match self {
             AnimationEnum::Blank => {
                 target.buffer.fill(Rgb888::new(0x00, 0, 0x10));
+            }
+            AnimationEnum::CenteredTitle(line1, line2) => {
+                Self::draw_card(line1, line2, Rgb888::new(255, 200, 80), target);
+            }
+            AnimationEnum::StatusCard(line1, line2) => {
+                // Red alert card: the display worker's status-screen mode
+                // (join failures, link lost, AP fallback) overlays these on
+                // top of the playlist so the board reads its own state.
+                Self::draw_card(line1, line2, Rgb888::new(255, 60, 40), target);
+            }
+            AnimationEnum::Aurora => {
+                let t = ms_since_start as f32 / 1000.0;
+
+                // Faint stars behind the curtains
+                for i in 0..30u32 {
+                    let h = fnv(i, 7);
+                    let x = (h % WIDTH as u32) as usize;
+                    let y = ((h >> 8) % 22u32) as usize;
+                    let tw = 0.15 + 0.25 * ((sinp(t * (1.0 + ((h >> 4) % 8) as f32 * 0.2) + h as f32 * 0.01)) * 0.5 + 0.5);
+                    let v = (tw * 255.0) as u8;
+                    target.buffer[y * WIDTH + x] = Rgb888::new(v, v, (v as u16 + 30).min(255) as u8);
+                }
+
+                // Two layered curtains drawn as vertical gradient columns
+                for layer in 0..2u32 {
+                    let speed = 0.6 + layer as f32 * 0.35;
+                    let hue_top = if layer == 0 { 0.34 } else { 0.42 };
+
+                    for x in 0..WIDTH {
+                        let xf = x as f32;
+                        let wave = sinp(xf * 0.17 + t * speed) + 0.6 * sinp(xf * 0.06 - t * speed * 0.8);
+                        let top = 6.0 + wave * 5.0 + layer as f32 * 4.0;
+                        let thick = 15.0 + 5.0 * sinp(xf * 0.13 + t * (1.0 + speed));
+                        let shimmer = 0.55 + 0.45 * sinp(xf * 0.55 + t * (2.0 + speed));
+
+                        let end = (top + thick) as i32;
+                        let mut y = top.floor() as i32;
+                        while y < end {
+                            if y >= 0 && y < HEIGHT as i32 && thick > 1.0 {
+                                let fy = (y as f32 - top) / thick; // 0 at band top, 1 at bottom
+                                let v = (1.0 - fy) * shimmer;
+                                if v > 0.02 {
+                                    // Green at the leading edge, drifting to violet below
+                                    let hue = (hue_top + fy * 0.4).min(0.95);
+                                    target.buffer[y as usize * WIDTH + x] = hsv_to_rgb(hue, 0.95, v);
+                                }
+                            }
+                            y += 1;
+                        }
+                    }
+                }
+            }
+            AnimationEnum::Starfield => {
+                let t = ms_since_start as f32 / 1000.0;
+
+                for i in 0..70u32 {
+                    let h = fnv(i, 13);
+                    let x = (h % WIDTH as u32) as usize;
+                    let y = ((h >> 8) % HEIGHT as u32) as usize;
+                    let speed = 0.6 + ((h >> 4) % 10) as f32 * 0.15;
+                    let phase = (h >> 12) as f32 * 0.05;
+                    let tw = 0.25 + 0.75 * ((sinp(t * speed + phase)) * 0.5 + 0.5);
+                    let b = (tw * tw * 255.0) as u8;
+                    let r = (b as f32 * 0.85) as u8;
+                    let g = (b as f32 * 0.95) as u8;
+                    let idx = y * WIDTH + x;
+                    target.buffer[idx] = Rgb888::new(r, g, b);
+                    if tw > 0.92 {
+                        // Bright stars get a little sheen
+                        if x + 1 < WIDTH {
+                            target.buffer[idx + 1] = Rgb888::new(r / 2, g / 2, b / 2);
+                        }
+                        if y + 1 < HEIGHT {
+                            target.buffer[idx + WIDTH + 1] = Rgb888::new(r / 2, g / 2, b / 2);
+                        }
+                    }
+                }
+
+                // Occasional shooting star
+                let phase = t % 5.5;
+                if phase < 1.0 {
+                    let p = phase;
+                    let hx = -4.0 + p * 68.0;
+                    let hy = 3.0 + p * 13.0;
+                    for k in 0..6 {
+                        let x = (hx - k as f32 * 1.6) as i32;
+                        let y = (hy - k as f32 * 0.3) as i32;
+                        if x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
+                            let f = (200 - k * 32).max(0) as u8;
+                            target.buffer[y as usize * WIDTH + x as usize] = Rgb888::new(f, f, 255);
+                        }
+                    }
+                }
+            }
+            AnimationEnum::Snowfall => {
+                let t = ms_since_start as f32 / 1000.0;
+
+                for i in 0..60u32 {
+                    let h = fnv(i, 29);
+                    let depth = ((h >> 4) % 10) as f32 / 9.0; // 0 = far, 1 = near
+                    let speed = 6.0 + depth * 14.0;
+                    let sway = 3.0 + depth * 7.0;
+                    let wob = 0.4 + ((h >> 8) % 12) as f32 * 0.12;
+
+                    let yf = (((h % HEIGHT as u32) as f32) + t * speed) % (HEIGHT as f32 + 2.0);
+                    let xf = ((h >> 16) as f32 / 65536.0 * WIDTH as f32)
+                        + t * (2.0 + depth * 4.0)
+                        + sinp(t * wob + i as f32) * sway;
+                    let x = xf.rem_euclid(WIDTH as f32) as usize;
+                    let y = yf as usize;
+
+                    if y < HEIGHT {
+                        let v = (150.0 + depth * 105.0) as u8;
+                        target.buffer[y * WIDTH + x] =
+                            Rgb888::new((v as u16 * 92 / 100) as u8, (v as u16 * 97 / 100) as u8, 255);
+                        if depth > 0.75 {
+                            // Near flakes catch the light
+                            if x + 1 < WIDTH {
+                                target.buffer[y * WIDTH + x + 1] = Rgb888::new(v / 2, v / 2, 200);
+                            }
+                            if y + 1 < HEIGHT {
+                                target.buffer[(y + 1) * WIDTH + x] = Rgb888::new(v / 2, v / 2, 200);
+                            }
+                        }
+                    }
+                }
+            }
+            AnimationEnum::FallingLeaves => {
+                let t = ms_since_start as f32 / 1000.0;
+                const PALETTE: [(u8, u8, u8); 5] = [
+                    (224, 96, 24),  // autumn orange
+                    (190, 44, 32),  // red
+                    (236, 178, 42), // gold
+                    (150, 88, 30),  // brown
+                    (246, 214, 96), // yellow
+                ];
+
+                for i in 0..18u32 {
+                    let h = fnv(i, 41);
+                    let (r, g, b) = PALETTE[(h % 5) as usize];
+                    let depth = ((h >> 3) % 10) as f32 / 9.0;
+                    let speed = 5.0 + depth * 9.0;
+                    let sway = 5.0 + ((h >> 7) % 6) as f32;
+                    let wob = 0.7 + ((h >> 11) % 8) as f32 * 0.1;
+                    let spin = 1.2 + ((h >> 15) % 10) as f32 * 0.25;
+
+                    let yf = (((h >> 2) % HEIGHT as u32) as f32 + t * speed) % (HEIGHT as f32 + 4.0);
+                    let xf = ((h >> 16) as f32 / 65536.0 * (WIDTH + 20) as f32)
+                        + sinp(t * wob + i as f32) * sway
+                        + t * 1.5
+                        - 10.0;
+                    let x = xf.rem_euclid((WIDTH + 20) as f32) as i32 - 10;
+                    let y = yf as i32 - 2;
+
+                    // Tumbling leaf: the blob narrows and widens as it turns
+                    let turn = sinp(t * spin + i as f32);
+                    let size = 1 + ((turn.abs() * 1.8) as i32).min(2);
+                    if x > -3 && x < WIDTH as i32 + 3 && y > -3 && y < HEIGHT as i32 {
+                        let dim = 0.5 + 0.5 * turn.abs();
+                        draw_circle_filled(
+                            x,
+                            y,
+                            size,
+                            Rgb888::new(
+                                (r as f32 * dim) as u8,
+                                (g as f32 * dim) as u8,
+                                (b as f32 * dim) as u8,
+                            ),
+                            target,
+                        );
+                    }
+                }
+            }
+            AnimationEnum::Fireflies => {
+                let t = ms_since_start as f32 / 1000.0;
+
+                // Woodland night: a deep green wash fading to black overhead
+                for y in 0..HEIGHT {
+                    let f = y as f32 / HEIGHT as f32;
+                    for x in 0..WIDTH {
+                        target.buffer[y * WIDTH + x] =
+                            Rgb888::new((4.0 * f) as u8, (14.0 * f) as u8, (8.0 * f) as u8);
+                    }
+                }
+
+                // A low winter moon
+                draw_circle_filled(50, 5, 3, Rgb888::new(150, 150, 130), target);
+
+                // Pine-silhouette tree line
+                for tx in (0..WIDTH as i32).step_by(9) {
+                    let h = 6 + ((tx * 7) % 5);
+                    draw_triangle_filled(tx, 40, tx + 6, 40, tx + 3, 40 - h, Rgb888::new(3, 9, 5), target);
+                }
+
+                // Drifting, blinking fireflies
+                for i in 0..14u32 {
+                    let h = fnv(i, 57);
+                    let fx = 8.0 + (h % 44) as f32;
+                    let fy = 6.0 + ((h >> 6) % 22) as f32;
+                    let sx = 0.3 + ((h >> 3) % 10) as f32 * 0.05;
+                    let sy = 0.2 + ((h >> 9) % 10) as f32 * 0.05;
+                    let pulse = 0.6 + ((h >> 13) % 12) as f32 * 0.15;
+
+                    let x = (fx + sinp(t * sx + i as f32) * 7.0 + sinp(t * 0.11 * (1.0 + i as f32 * 0.01)) * 4.0) as i32;
+                    let y = (fy + sinp(t * sy + i as f32 * 0.7) * 5.0) as i32;
+                    let glow = sinp(t * pulse + i as f32 * 1.7) * 0.5 + 0.5;
+                    let glow = glow * glow * glow * glow; // mostly dark, flaring bright
+
+                    if glow > 0.04 && x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
+                        let v = (glow * 255.0) as u8;
+                        draw_circle_filled(
+                            x,
+                            y,
+                            2,
+                            Rgb888::new((v as u16 * 45 / 100) as u8, v, (v as u16 * 35 / 100) as u8),
+                            target,
+                        );
+                        target.buffer[y as usize * WIDTH + x as usize] =
+                            Rgb888::new(v, v, (v as u16 * 60 / 100) as u8);
+                    }
+                }
+            }
+            AnimationEnum::VinylSpin => {
+                let t = ms_since_start as f32 / 1000.0;
+                let cx = 30.0;
+                let cy = 20.0;
+                let r_outer = 18.0;
+                let rot = t * 3.0; // spin rate, rad/s
+
+                for y in 0..HEIGHT {
+                    for x in 0..WIDTH {
+                        let dx = x as f32 - cx;
+                        let dy = y as f32 - cy;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist > r_outer {
+                            continue;
+                        }
+
+                        let angle = dy.atan2(dx);
+                        let mut v = 22.0 + 10.0 * sinp(dist * 2.5); // groove shimmer
+                        let gloss = (cosp(angle - rot) * 0.5 + 0.5).powi(4) * 38.0; // rotating sheen
+                        v += gloss;
+                        if dist > 16.5 {
+                            v *= (r_outer - dist) * 2.0; // soften the rim
+                        }
+
+                        let mut color = if dist < 6.0 {
+                            if dist < 0.9 {
+                                Rgb888::new(0, 0, 0) // spindle hole
+                            } else {
+                                let mut lv = 150.0 + 60.0 * ((cosp(angle - rot) * 0.5 + 0.5).max(0.0));
+                                if dist > 5.2 {
+                                    lv *= 0.6;
+                                }
+                                Rgb888::new(lv as u8, 26, 34)
+                            }
+                        } else {
+                            Rgb888::new((v * 0.75) as u8, (v * 0.75) as u8, (v * 0.85) as u8)
+                        };
+
+                        // Highlight dot on the label so the spin reads
+                        if dist > 2.5 && dist < 4.5 && (angle - rot).rem_euclid(2.0 * PI) < 0.45 {
+                            color = Rgb888::new(230, 230, 200);
+                        }
+
+                        target.buffer[y * WIDTH + x] = color;
+                    }
+                }
+            }
+            AnimationEnum::CanalBoats => {
+                let t = ms_since_start as f32 / 1000.0;
+                let water_top = 20usize;
+
+                // Dusk sky
+                for y in 0..water_top {
+                    let f = y as f32 / water_top as f32;
+                    for x in 0..WIDTH {
+                        target.buffer[y * WIDTH + x] = Rgb888::new(
+                            (10.0 + 26.0 * f) as u8,
+                            (10.0 + 22.0 * f) as u8,
+                            (30.0 + 28.0 * f) as u8,
+                        );
+                    }
+                }
+
+                // Early-evening stars
+                for (sx, sy, sv) in [(8usize, 3usize, 140u8), (17, 6, 95), (44, 2, 110), (52, 8, 80)] {
+                    target.buffer[sy * WIDTH + sx] = Rgb888::new(sv, sv, 255);
+                }
+
+                // Low sun by the horizon
+                draw_circle_filled(49, 18, 2, Rgb888::new(160, 110, 50), target);
+
+                // Old mill on the far bank: body, chimney and a slowly turning wheel
+                draw_rect_filled(41, 9, 9, 11, Rgb888::new(8, 8, 12), target);
+                draw_rect_filled(45, 5, 2, 4, Rgb888::new(8, 8, 12), target);
+                draw_circle_filled(41, 13, 4, Rgb888::new(6, 6, 10), target);
+                draw_circle(41, 13, 4, Rgb888::new(34, 30, 44), target);
+                draw_circle(41, 13, 2, Rgb888::new(34, 30, 44), target);
+                let wrot = t % (2.0 * PI);
+                for k in 0..4 {
+                    let a = wrot + k as f32 * (PI / 2.0);
+                    draw_line(
+                        41,
+                        13,
+                        (41.0 + 4.0 * a.cos()) as i32,
+                        (13.0 + 4.0 * a.sin()) as i32,
+                        Rgb888::new(34, 30, 44),
+                        target,
+                    );
+                }
+
+                // Water with drifting ripples
+                for y in water_top..HEIGHT {
+                    let f = (y - water_top) as f32 / (HEIGHT - water_top) as f32;
+                    for x in 0..WIDTH {
+                        let ripple = 0.5 + 0.5 * sinp(x as f32 * 0.35 + t * 1.4 + y as f32 * (0.8 + 0.4 * f));
+                        target.buffer[y * WIDTH + x] = Rgb888::new(
+                            (8.0 + 8.0 * ripple) as u8,
+                            (22.0 + 10.0 * f + 8.0 * ripple) as u8,
+                            (46.0 + 18.0 * f + 16.0 * ripple) as u8,
+                        );
+                    }
+                }
+
+                // Sun glinting on the water below the low sun
+                for y in (water_top + 1)..HEIGHT {
+                    let f = (y - water_top) as f32 / (HEIGHT - water_top) as f32;
+                    for dx in -3i32..=3 {
+                        let x = 49 + dx;
+                        if x < 0 || x >= WIDTH as i32 {
+                            continue;
+                        }
+                        let lx = (x as f32 + sinp(y as f32 * 1.6 + t * 3.0) * 2.0) as i32;
+                        if lx < 0 || lx >= WIDTH as i32 {
+                            continue;
+                        }
+                        let v = (1.0 - f) * (0.45 + 0.55 * sinp(x as f32 * 2.1 + t * 5.0));
+                        if v <= 0.1 {
+                            continue;
+                        }
+                        let idx = y * WIDTH + lx as usize;
+                        let base = target.buffer[idx];
+                        target.buffer[idx] = Rgb888::new(
+                            (base.r() as f32 + 210.0 * v).min(255.0) as u8,
+                            (base.g() as f32 + 150.0 * v).min(255.0) as u8,
+                            (base.b() as f32 + 80.0 * v).min(255.0) as u8,
+                        );
+                    }
+                }
+
+                // A narrowboat crossing the cut, with its reflection
+                const CYCLE: f32 = 18.0;
+                let p = t % CYCLE;
+                let bx = -16.0 + (p / CYCLE) * (WIDTH as f32 + 32.0);
+                let bi = bx as i32;
+
+                draw_rect_filled(bi, 17, 14, 2, Rgb888::new(58, 24, 20), target); // hull
+                draw_rect_filled(bi, 18, 14, 1, Rgb888::new(200, 60, 40), target); // stripe
+                draw_rect_filled(bi + 10, 14, 1, 3, Rgb888::new(30, 30, 34), target); // chimney
+                draw_rect_filled(bi + 1, 14, 4, 3, Rgb888::new(60, 40, 90), target); // cabin
+                if bi + 2 >= 0 && bi + 2 < WIDTH as i32 {
+                    target.buffer[15 * WIDTH + (bi + 2) as usize] = Rgb888::new(255, 200, 90); // window
+                }
+
+                // Wake trailing behind the boat
+                for (k, wx) in [(2i32, 120i32), (5, 70)] {
+                    let x = bi - k;
+                    if x >= 0 && x < WIDTH as i32 {
+                        target.buffer[19 * WIDTH + x as usize] =
+                            Rgb888::new(30, (wx as f32 * 0.9) as u8, wx as u8);
+                    }
+                }
+
+                draw_rect_filled(bi + 1, 20, 12, 3, Rgb888::new(12, 10, 26), target); // reflection
             }
             AnimationEnum::TwoLineMessage(line1, line2) => {
                 let style = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
@@ -988,6 +1375,34 @@ impl Animation for AnimationEnum {
     }
 }
 
+impl AnimationEnum {
+    // Shared renderer for CenteredTitle/StatusCard: gold 6x12 font, up to
+    // ~10 chars per line, centered — unlike 10x20 the section/status names
+    // all fit on the 60px panel.
+    fn draw_card(line1: &str, line2: &str, color: Rgb888, target: &mut BufferTargetRgb888) {
+        let style = MonoTextStyleBuilder::new()
+            .font(&FONT_6X12)
+            .text_color(color)
+            .build();
+
+        for (line, y) in [(line1, 7i32), (line2, 21)] {
+            let w = line.chars().count() as i32 * 6;
+            let x = ((WIDTH as i32 - w) / 2).max(0);
+            Text::with_text_style(
+                line,
+                Point::new(x, y),
+                style,
+                TextStyleBuilder::new()
+                    .alignment(Alignment::Left)
+                    .baseline(Baseline::Top)
+                    .build(),
+            )
+            .draw(target)
+            .unwrap();
+        }
+    }
+}
+
 impl CloneableAnimation for AnimationEnum {
     fn clone_box(&self) -> Box<dyn Animation> {
         Box::new(self.clone())
@@ -1013,4 +1428,30 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Rgb888 {
     };
 
     Rgb888::new(r, g, b)
+}
+
+// Helper: deterministic seed → pseudo-random u32 (FNV-style), for star/snow/leaf
+// positions. Fixed seeds keep every animation frame sequence reproducible.
+fn fnv(i: u32, salt: u32) -> u32 {
+    i.wrapping_mul(1_677_761_993) ^ salt.wrapping_mul(2_246_822_519)
+}
+
+// Helpers: micromath's sin/cos are only accurate within -π..π, so fold the
+// argument into that range first (time-based phases grow past π quickly).
+fn sinp(a: f32) -> f32 {
+    wrap_pi(a % (2.0 * PI)).sin()
+}
+
+fn cosp(a: f32) -> f32 {
+    wrap_pi(a % (2.0 * PI)).cos()
+}
+
+fn wrap_pi(a: f32) -> f32 {
+    let mut a = a;
+    if a > PI {
+        a -= 2.0 * PI;
+    } else if a < -PI {
+        a += 2.0 * PI;
+    }
+    a
 }
