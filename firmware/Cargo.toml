@@ -15,6 +15,9 @@ console = []
 # Diagnostic builds: drop the embedded web bundle so `wifi,console` fits the
 # 508 K app slot.
 no_web = ["led-core/no_web"]
+# Run the display worker on the second core (the pre-Nov-2026 arrangement).
+# Off by default: single-core is proven on hardware, core1 froze at frame one.
+core1 = []
 
 [dependencies]
 radio_link = { path = "../radio_link" }

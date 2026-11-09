@@ -266,14 +266,14 @@ static STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0
 /// Mark a boot milestone: records the stage number for the heartbeat and logs
 /// the named line.
 pub fn stage(n: u8, what: &str) {
+    // Always visible on the defmt channel too (TCP/RTT), not just the USB
+    // ring: one boot ledger, every milestone, whichever transport is live.
+    defmt::info!("stage {}: {}", n, what);
+
     #[cfg(feature = "console")]
     {
         STAGE.store(n, core::sync::atomic::Ordering::Relaxed);
         log(format_args!("stage {n}: {what}"));
-    }
-    #[cfg(not(feature = "console"))]
-    {
-        let _ = (n, what);
     }
 }
 

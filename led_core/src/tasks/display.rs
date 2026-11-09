@@ -20,12 +20,18 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
     led_screen.copy_eg_buffer(&[Rgb888::new(0x10, 0x10, 0x0); crate::led_screen::TOTAL_PIXELS]);
     led_screen.flush().await;
+    info!("display: first frame flushed (self-test yellow)");
 
     let mut buffer_1 = BufferTarget::new();
     let mut buffer_2 = BufferTarget::new();
 
     let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
     let mut last_time = embassy_time::Instant::now();
+
+    // Frame ledger: a stall, a dropped frame rate or a dead worker is visible
+    // in the log stream instead of having to be inferred from the panel.
+    let mut frames: u32 = 0;
+    let mut window_start = last_time;
 
     let mut power_limit = 0.1f32;
     // Status-screen mode: when set, the animation is drawn over the still
@@ -94,5 +100,19 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;
+
+        frames += 1;
+        let window = window_start.elapsed().as_millis();
+        if window >= 10_000 {
+            info!(
+                "display: {} frames in {} ms ({} fps), power limit {}",
+                frames,
+                window,
+                frames * 1000 / window.max(1) as u32,
+                power_limit
+            );
+            frames = 0;
+            window_start = embassy_time::Instant::now();
+        }
     }
 }

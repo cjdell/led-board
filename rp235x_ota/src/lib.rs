@@ -13,6 +13,10 @@ use embassy_rp::rom_data;
 use sha2::{Digest, Sha256};
 
 const REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE: u32 = 0x4;
+/// Without this the ROM reboot2 call can return on success, leaving the OTA
+/// image verified-but-never-booted: the board keeps running the old image and
+/// the whole upload looks like a no-op.
+const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
 
 const RP2350_ARM_S: u32 = 0xe48bff59;
 
@@ -234,11 +238,16 @@ where
             // self.watchdog.try_write().unwrap().stop();
 
             rom_data::reboot(
-                REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE,
+                REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
                 1_000,
                 FLASH_BASE + self.start_addr,
                 0,
             );
+
+            // The ROM only returns here if the reboot was refused (e.g. the
+            // target partition is invalid). Say so loudly instead of silently
+            // continuing to run the old image.
+            info!("Rp235xOta: reboot2 returned — flash-update boot refused");
 
             // self.watchdog.try_write().unwrap().trigger_reset();
         } else {

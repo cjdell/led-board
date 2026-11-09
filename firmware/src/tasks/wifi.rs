@@ -151,7 +151,9 @@ pub async fn init_wifi(
 
     Timer::after(Duration::from_millis(1_000)).await;
 
-    info!("SPI configured");
+    info!("SPI configured (gSPI PIO)");
+
+    crate::tasks::usb_dbg::stage(16, "wifi: loading cyw43 firmware");
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
@@ -161,21 +163,29 @@ pub async fn init_wifi(
     spawner.spawn(cyw43_task(runner).unwrap());
 
     info!("WiFi driver task started");
+    crate::tasks::usb_dbg::stage(17, "wifi: cyw43 driver up, init clm");
 
     control.init(clm).await;
+    info!("WiFi: clm init done");
 
     control.set_power_management(PowerManagementMode::None).await;
+    info!("WiFi: power management off (max throughput)");
 
     let mut dhcp_config = DhcpConfig::default();
     dhcp_config.hostname = Some(heapless::String::<32>::try_from("led-board").unwrap());
 
     let config = Config::dhcpv4(dhcp_config);
 
-    static RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
+    // Socket budget: 5 web listeners + mdns + dhcp + defmt-TCP + mDNS
+    // responder sockets + a browser's parallel connections (6 in practice).
+    // 10 was too tight: the 4-way burst test had connections refused because
+    // every slot was taken by a listener.
+    static RESOURCES: StaticCell<StackResources<16>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(net_device, config, RESOURCES.init(StackResources::new()), seed);
 
     spawner.spawn(net_task(runner).unwrap());
-    info!("Network stack task started");
+    info!("Network stack task started (DHCP)");
+    crate::tasks::usb_dbg::stage(18, "wifi: net stack running");
 
     let led_channel = make_static!(Channel<NoopRawMutex, bool, 1>, Channel::<NoopRawMutex, bool, 1>::new());
     let public_control = WifiControl::new(led_channel.sender());
@@ -194,7 +204,7 @@ pub async fn init_wifi(
         .unwrap(),
     );
 
-    info!("WiFi task started");
+    info!("WiFi task started (join loop on its own task)");
 
     // Do NOT park main here: the web app, playlist and heartbeat must come up
     // whatever the network is doing (venue joins can wander for minutes).
@@ -221,7 +231,8 @@ async fn network_ready_task(
     let mut receiver = ethernet_signal.receiver().unwrap();
 
     if let EthernetSignalMessage::Connected(ip) = receiver.get().await {
-        info!("WIFI GOT SIGNAL");
+        info!("WIFI GOT SIGNAL — spawning mDNS");
+        crate::tasks::usb_dbg::stage(19, "net: first IPv4 lease");
         crate::tasks::usb_dbg::log(format_args!("net: first signal — mdns up ({ip})"));
         Timer::after(Duration::from_millis(1_000)).await;
 

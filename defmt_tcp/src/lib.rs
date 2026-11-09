@@ -23,7 +23,8 @@ use alloc::vec::Vec;
 use defmt::Encoder;
 use embassy_net::{Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, rwlock::RwLock};
-use embassy_time::Duration;
+use embassy_futures::select::{Either, select};
+use embassy_time::{Duration, Timer};
 use embedded_io_async::Write as _;
 
 const RTT_PORT: u16 = 19021;
@@ -112,7 +113,20 @@ impl TcpSender {
             }
 
             loop {
-                let buf = self.channel.receive().await;
+                // Do NOT block forever on `receive()`: with nothing being
+                // logged, a client that detached would go unnoticed and the
+                // lone accept loop would never listen again — a later
+                // `defmt-print` then sees ECONNREFUSED for the rest of the
+                // boot. Tick instead and reap the socket when it is gone.
+                let buf = match select(self.channel.receive(), Timer::after(Duration::from_secs(1))).await {
+                    Either::First(buf) => buf,
+                    Either::Second(()) => {
+                        if !socket.may_send() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
 
                 match socket.write_all(&buf).await {
                     Ok(()) => (),

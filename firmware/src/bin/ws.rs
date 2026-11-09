@@ -98,17 +98,14 @@ static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Give probe-rs time to attach and find RTT
-    for _ in 0..5000000 {
-        cortex_m::asm::nop();
-    }
-
     // Initialize the allocator BEFORE you use it
     unsafe {
         embedded_alloc::init!(HEAP, 192 * 1024);
     }
+    firmware::tasks::usb_dbg::stage(0, "allocator up (192 KiB heap)");
 
     let mut p = embassy_rp::init(Default::default());
+    firmware::tasks::usb_dbg::stage(10, "clocks + peripherals up");
 
     let pio = p.PIO1;
     let dma = p.DMA_CH2;
@@ -132,21 +129,35 @@ async fn main(spawner: Spawner) {
         &program,
     );
 
+    firmware::tasks::usb_dbg::stage(11, "ws2812 PIO driver configured");
+
     let display_worker_channel = make_static!(DisplayWorkerChannel, DisplayWorkerChannel::new());
 
     let display_worker_sender = display_worker_channel.sender();
     let display_worker_receiver = display_worker_channel.receiver();
 
-    firmware::tasks::usb_dbg::stage(2, "spawning core1 display");
+    // Display worker placement. Single-core is the default: the display-only
+    // image (ws_art) proved the whole pipeline works on the main executor,
+    // while the core1 split kept freezing the panel at its first frame.
+    // `core1` restores the old multicore arrangement for comparison.
+    #[cfg(feature = "core1")]
+    {
+        firmware::tasks::usb_dbg::stage(2, "spawning core1 display");
+        spawn_core1(
+            p.CORE1,
+            unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
+            move || {
+                let executor1 = EXECUTOR1.init(Executor::new());
+                executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(ws2812, display_worker_receiver))));
+            },
+        );
+    }
 
-    spawn_core1(
-        p.CORE1,
-        unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
-        move || {
-            let executor1 = EXECUTOR1.init(Executor::new());
-            executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(ws2812, display_worker_receiver))));
-        },
-    );
+    #[cfg(not(feature = "core1"))]
+    {
+        firmware::tasks::usb_dbg::stage(2, "spawning display worker (single core)");
+        spawner.spawn(unwrap!(display_task(ws2812, display_worker_receiver)));
+    }
 
     // Bench debug console (feature "console"): USB-CDC port + breadcrumb ring.
     // Started AFTER spawn_core1 — a console that initializes the USB PHY
@@ -203,6 +214,7 @@ async fn main(spawner: Spawner) {
 
     let ethernet_signal = make_static!(EthernetSignal, EthernetSignal::new());
 
+    firmware::tasks::usb_dbg::stage(12, "mounting littlefs");
     let flash = make_static!(Flash<FLASH, flash::Async, FLASH_SIZE>, Flash::new(p.FLASH, p.DMA_CH3, Irqs));
 
     let flash = Arc::new(RwLock::new(flash));
@@ -240,6 +252,7 @@ async fn main(spawner: Spawner) {
         ));
     }
 
+    firmware::tasks::usb_dbg::stage(13, "filesystem + config ready");
     info!("Starting Network...");
     firmware::tasks::usb_dbg::stage(3, "starting network");
 
@@ -351,7 +364,10 @@ async fn main(spawner: Spawner) {
     }
 
     #[cfg(not(feature = "radio"))]
-    spawner.spawn(defmt_runner(stack).unwrap());
+    {
+        firmware::tasks::usb_dbg::stage(14, "starting defmt-TCP logger");
+        spawner.spawn(defmt_runner(stack).unwrap());
+    }
 
     Timer::after(Duration::from_millis(1_000)).await;
 
@@ -367,6 +383,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(watchdog_runner(watchdog.clone()).unwrap());
     spawner.spawn(heartbeat_task(board.clone()).unwrap());
+    firmware::tasks::usb_dbg::stage(15, "heartbeat + watchdog tasks running");
 
     match local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
         Ok(json) => {
@@ -456,6 +473,15 @@ async fn main(spawner: Spawner) {
     firmware::tasks::usb_dbg::stage(8, "boot: complete — pump+animation loop running");
 
     join(ws_fut, animation_fut).await;
+}
+
+#[embassy_executor::task]
+async fn display_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, receiver: DisplayWorkerReceiver) {
+    firmware::tasks::usb_dbg::stage(9, "display worker starting (core0)");
+
+    let led_screen = LedScreen::new(ws2812);
+
+    display::run(receiver, led_screen).await;
 }
 
 #[embassy_executor::task]
