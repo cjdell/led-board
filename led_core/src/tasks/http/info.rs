@@ -1,6 +1,6 @@
-use crate::{config::DEFAULT_PLAYLIST_FILENAME, types::*};
+use crate::config::DEFAULT_PLAYLIST_FILENAME;
 use animations::Playlist;
-use embedded_tools::local_fs::LocalFsTrait as _;
+use embedded_tools::local_fs::LocalFsTrait;
 use picoserve::{
     ResponseSent,
     io::Read,
@@ -33,17 +33,17 @@ impl RequestHandlerService<()> for GetAnimationsHandler {
     }
 }
 
-pub struct GetPlaylistHandler {
-    local_fs: LocalFs,
+pub struct GetPlaylistHandler<FS: LocalFsTrait + Clone> {
+    local_fs: FS,
 }
 
-impl GetPlaylistHandler {
-    pub fn new(local_fs: LocalFs) -> Self {
+impl<FS: LocalFsTrait + Clone> GetPlaylistHandler<FS> {
+    pub fn new(local_fs: FS) -> Self {
         Self { local_fs }
     }
 }
 
-impl RequestHandlerService<()> for GetPlaylistHandler {
+impl<FS: LocalFsTrait + Clone> RequestHandlerService<()> for GetPlaylistHandler<FS> {
     async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         _: &(),
@@ -53,8 +53,7 @@ impl RequestHandlerService<()> for GetPlaylistHandler {
     ) -> Result<ResponseSent, W::Error> {
         let json = match self.local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
             Ok(json) => json,
-            Err(err) => {
-                // return format_response!(req, writer, "No playlist file");
+            Err(_err) => {
                 return json_response!(req, writer, "[]");
             }
         };

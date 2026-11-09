@@ -15,13 +15,14 @@ console = []
 
 [dependencies]
 radio_link = { path = "../radio_link" }
+led-core = { path = "../led_core" }
 animations = { path = "../animations", features = [
     "critical-section",
     "defmt",
 ] }
 defmt-tcp = { path = "../defmt_tcp" }
 rp235x-ota = { path = "../rp235x_ota" }
-embedded-tools = { path = "../embedded_tools" }
+embedded-tools = { path = "../embedded_tools", features = ["defmt"] }
 rp235x-embedded-tools = { path = "../rp235x_embedded_tools" }
 
 defmt = "1.0.1"

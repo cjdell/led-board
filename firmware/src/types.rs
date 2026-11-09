@@ -1,66 +1,16 @@
-use crate::config::LedBoardConfig;
-use alloc::{sync::Arc, vec::Vec};
-use animations::{AnimationEnum, AnimationParams};
-use core::net::Ipv4Addr;
+//! Pico-flavoured type aliases over the platform-neutral core types: the
+//! concrete littlefs-on-flash store, its config file, and the rp235x
+//! watchdog the OTA flow must pause.
+
+use alloc::sync::Arc;
 use embassy_rp::watchdog::Watchdog;
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    channel::{self, Channel},
-    rwlock::RwLock,
-    watch::{self, Watch},
-};
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, rwlock::RwLock};
 use rp235x_embedded_tools::flash::LittleFsFlashStorage;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
-pub enum EthernetSignalMessage {
-    Connected(Ipv4Addr),
-    Disconnected,
-}
-
-pub type EthernetSignal = Watch<CriticalSectionRawMutex, EthernetSignalMessage, 10>;
-pub type EthernetSignalSender = watch::Sender<'static, CriticalSectionRawMutex, EthernetSignalMessage, 10>;
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum WebSocketIncomingMessage {
-    Ping,
-    FrameBuffer(Vec<u8>),
-    Next,
-    Animation(AnimationEnum, u32),
-    Playlist {
-        playlist: Vec<(AnimationEnum, u32)>,
-        save: bool,
-    },
-    Reset,
-    ParamsBuffer(Vec<u8>),
-    PowerLimit(f32),
-}
-
-pub type WebSocketIncomingChannel = Channel<CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
-pub type WebSocketIncomingSender = channel::Sender<'static, CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
-pub type WebSocketIncomingReceiver = channel::Receiver<'static, CriticalSectionRawMutex, WebSocketIncomingMessage, 1>;
-
-#[derive(Clone)]
-pub enum DisplayWorkerMessage {
-    Next,
-    Animation(AnimationEnum, u32),
-    Playlist(Vec<(AnimationEnum, u32)>),
-    PowerLimit(f32),
-    ParamsBuffer(Vec<AnimationParams>),
-    FrameBuffer(Vec<Rgb888>),
-}
-
-pub type DisplayWorkerChannel = Channel<CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
-pub type DisplayWorkerSender = channel::Sender<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
-pub type DisplayWorkerReceiver = channel::Receiver<'static, CriticalSectionRawMutex, DisplayWorkerMessage, 1>;
-
-pub type ActivityWatch = watch::Watch<CriticalSectionRawMutex, u64, 1>;
-pub type ActivityWatchReceiver = watch::Receiver<'static, CriticalSectionRawMutex, u64, 1>;
-
-pub type SharedWatchdog = Arc<RwLock<CriticalSectionRawMutex, Watchdog>>;
+pub use led_core::types::*;
 
 pub type LocalFs = embedded_tools::local_fs::LocalFs<LittleFsFlashStorage>;
 
-pub type LedBoardConfigFile = ConfigFile<LedBoardConfig, LocalFsConfigFileStorage<LocalFs>>;
+pub type LedBoardConfigFile = led_core::types::LedBoardConfigFile<LocalFs>;
+
+pub type SharedWatchdog = Arc<RwLock<CriticalSectionRawMutex, Watchdog>>;

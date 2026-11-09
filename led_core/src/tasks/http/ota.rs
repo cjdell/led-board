@@ -1,6 +1,6 @@
-use crate::types::*;
+use crate::board::{Board, OtaBackend, OtaWriter};
 use alloc::{boxed::Box, string::ToString, vec::Vec};
-use defmt::info;
+use embedded_tools::info;
 use miniz_oxide::inflate::stream::{InflateState, inflate as mz_inflate};
 use miniz_oxide::{DataFormat, MZFlush};
 use picoserve::{
@@ -10,24 +10,22 @@ use picoserve::{
     response::{IntoResponse, ResponseWriter},
     routing::RequestHandlerService,
 };
-use rp235x_embedded_tools::flash::FlashStorage;
-use rp235x_ota::Rp235xOta;
 
-pub struct OtaUpdateHandler {
-    flash_storage: FlashStorage,
-    watchdog: SharedWatchdog,
+pub struct OtaUpdateHandler<B: Board> {
+    ota: B::Ota,
+    board: B,
 }
 
-impl OtaUpdateHandler {
-    pub fn new(flash_storage: FlashStorage, watchdog: SharedWatchdog) -> Self {
-        Self {
-            flash_storage,
-            watchdog,
-        }
+impl<B: Board> OtaUpdateHandler<B> {
+    pub fn new(ota: B::Ota, board: B) -> Self {
+        Self { ota, board }
     }
 }
 
-impl RequestHandlerService<()> for OtaUpdateHandler {
+impl<B: Board> RequestHandlerService<()> for OtaUpdateHandler<B>
+where
+    <B::Ota as OtaBackend>::Writer: OtaWriter,
+{
     async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         (): &(),
@@ -36,11 +34,7 @@ impl RequestHandlerService<()> for OtaUpdateHandler {
         response_writer: W,
     ) -> Result<ResponseSent, W::Error> {
         // Watchdog interferes with the reboot process so we must disable it...
-        self.watchdog.try_write().unwrap().stop();
-
-        // for _ in 0..5000000 {
-        //     cortex_m::asm::nop();
-        // }
+        self.board.stop_watchdog();
 
         let mut reader = request.body_connection.body().reader();
 
@@ -70,7 +64,7 @@ impl RequestHandlerService<()> for OtaUpdateHandler {
 
         let mut infl = compressed.then(|| Box::new(InflateState::new(DataFormat::Raw)));
 
-        let mut ota = match Rp235xOta::new(self.flash_storage.clone(), expected_sha256) {
+        let mut ota = match self.ota.begin(expected_sha256) {
             Ok(ota) => ota,
             Err(err) => {
                 return format_response!(request, response_writer, "Could not start OTA: {err:?}\r\n");

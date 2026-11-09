@@ -5,8 +5,20 @@ edition = "2024"
 authors = ["Chris Dell <cjdell@gmail.com>"]
 description = "Useful tools for embedded firmware"
 
+[features]
+# Logging backend for the target build: defmt (microcontroller) or std
+# (host simulator). Exactly one must be enabled by the final binary.
+defmt = [
+    "dep:defmt",
+    "embassy-time/defmt",
+    "embassy-time/defmt-timestamp-uptime",
+    "embassy-sync/defmt",
+    "embassy-net/defmt",
+]
+std = []
+
 [dependencies]
-defmt = "1.1.0"
+defmt = { version = "1.1.0", optional = true }
 littlefs-rust = "0.1.0"
 block_device = "0.1.3"
 
@@ -21,12 +33,8 @@ serde_json = { version = "1.0.150", default-features = false, features = [
 embedded-io-async = "0.7.0"
 
 embassy-futures = { git = "https://github.com/embassy-rs/embassy.git" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", features = [
-    "defmt",
-    "defmt-timestamp-uptime",
-] }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git" }
 embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
-    "defmt",
     "icmp",
     "tcp",
     "udp",
@@ -35,6 +43,4 @@ embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
     "medium-ethernet",
     "dns",
 ] }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", features = [
-    "defmt",
-] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git" }

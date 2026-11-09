@@ -54,7 +54,7 @@ function inlineExternalReferences(html: string) {
 // Function to compress data with GZIP
 async function compressWithGzip() {
   const input = await Deno.open("bundle/index.html");
-  const output = await Deno.open("bundle/index.html.gz", { create: true, write: true });
+  const output = await Deno.open("bundle/index.html.gz", { create: true, write: true, truncate: true });
 
   await input.readable
     .pipeThrough(new CompressionStream("gzip"))

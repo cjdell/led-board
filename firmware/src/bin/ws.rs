@@ -1,26 +1,22 @@
 #![no_std]
 #![no_main]
 #![recursion_limit = "256"]
-#![feature(vec_into_chunks)]
 
 extern crate alloc;
 
-use alloc::vec;
-use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
-use animations::{
-    AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS, apply_power_limit, playlist,
-};
+use alloc::{string::ToString as _, sync::Arc, vec::Vec};
+use animations::AnimationEnum;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join;
+#[cfg(not(feature = "radio"))]
 use embassy_net::Stack;
 use embassy_rp::rom_data;
 use embassy_rp::{
     bind_interrupts,
     block::*,
     bootsel::is_bootsel_pressed,
-    clocks::{ClockConfig, CoreVoltage},
     dma,
     flash::{self, Flash},
     gpio::{Level, Output},
@@ -34,24 +30,21 @@ use embassy_rp::{
 use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap as Heap;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_tools::{
-    config::{ConfigFile, storage::LocalFsConfigFileStorage},
-    local_fs::{LocalFs, LocalFsTrait as _},
-};
+use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
+use embedded_tools::local_fs::LocalFsTrait as _;
 use firmware::{
+    board::ActiveBoard,
     config::{DEFAULT_PLAYLIST_FILENAME, LedBoardConfig},
     led_screen::LedScreen,
     make_static,
-    tasks::{
-        LedControl as _, WifiControl,
-        http::{self, AppProps},
-    },
+    tasks::http::AppProps,
     types::*,
     ws2812p::{PioWs2812ParallelDriver, PioWs2812ParallelProgram},
 };
+use led_core::tasks::{display, heartbeat, http, pump};
+#[cfg(not(feature = "radio"))]
+use picoserve::AppRouter;
 use rp235x_embedded_tools::flash::{FlashStorage, LittleFsFlashStorage};
-use smart_leds::RGB8;
 use static_cell::StaticCell;
 
 #[cfg(feature = "defmt_tcp")]
@@ -116,16 +109,6 @@ async fn main(spawner: Spawner) {
     }
 
     let mut p = embassy_rp::init(Default::default());
-
-    // // Set up for clock frequency of 200 MHz, setting all necessary defaults.
-    // let mut config = embassy_rp::config::Config::new(ClockConfig::system_freq(200_000_000).unwrap());
-
-    // // since for the rp235x there is no official support for higher clock frequencies, `system_freq()` will not set a voltage for us.
-    // // We need to guess the core voltage, that is needed for the higher clock frequency. Going with a small increase from the default 1.1V here, based on
-    // // what we know about the RP2040. This is not guaranteed to be correct.
-    // config.clocks.core_voltage = CoreVoltage::V1_15;
-
-    // let mut p = embassy_rp::init(config);
 
     let pio = p.PIO1;
     let dma = p.DMA_CH2;
@@ -270,7 +253,7 @@ async fn main(spawner: Spawner) {
     // ESP32-C3 slave radio: the C3 owns WiFi; browser connections are relayed
     // over UART0 (GP12 -> C3 RX, GP13 <- C3 TX). No IP stack runs on the Pico.
     #[cfg(feature = "radio")]
-    let wifi_control = {
+    let _wifi_control = {
         // Bench debug console (feature "console"): USB-CDC logs on the Pico's
         // own port; radio builds otherwise leave USB unused.
         #[cfg(feature = "console")]
@@ -345,11 +328,18 @@ async fn main(spawner: Spawner) {
 
     Timer::after(Duration::from_millis(1_000)).await;
 
+    // The machine this app runs on, as the core sees it: reboot / watchdog /
+    // heartbeat / provisioning delegate to the hardware (or the slave radio).
+    #[cfg(feature = "radio")]
+    let board = ActiveBoard::new(config_file.clone(), watchdog.clone());
+    #[cfg(not(feature = "radio"))]
+    let board = ActiveBoard::new(watchdog.clone(), wifi_control.clone());
+
     let activity_watch = make_static!(ActivityWatch, ActivityWatch::new());
     let activity_watch_sender = activity_watch.sender();
-    let activity_watch_receiver = make_static!(ActivityWatchReceiver, activity_watch.receiver().unwrap());
 
-    spawner.spawn(watchdog_runner(watchdog.clone(), wifi_control, activity_watch_receiver).unwrap());
+    spawner.spawn(watchdog_runner(watchdog.clone()).unwrap());
+    spawner.spawn(heartbeat_task(board.clone()).unwrap());
 
     match local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
         Ok(json) => {
@@ -373,102 +363,35 @@ async fn main(spawner: Spawner) {
 
     let web_socket_incoming_channel = make_static!(WebSocketIncomingChannel, WebSocketIncomingChannel::new());
 
-    #[cfg(not(feature = "radio"))]
-    http::start_http(
-        spawner,
-        stack,
-        AppProps::new(
-            web_socket_incoming_channel.sender(),
-            flash_storage,
-            local_fs.clone(),
-            config_file.clone(),
-            watchdog.clone(),
-        ),
-    );
-
-    #[cfg(feature = "radio")]
-    http::start_http_radio(AppProps::new(
+    let app_props = AppProps::new(
         web_socket_incoming_channel.sender(),
-        flash_storage,
+        firmware::board::RpOtaBackend(flash_storage),
         local_fs.clone(),
         config_file.clone(),
-        watchdog.clone(),
-    ))
-    .await;
+        board.clone(),
+    );
 
-    let ws_fut = async {
-        loop {
-            match web_socket_incoming_channel.receive().await {
-                WebSocketIncomingMessage::Ping => {
-                    activity_watch_sender.send(embassy_time::Instant::now().as_millis());
-                }
-                WebSocketIncomingMessage::FrameBuffer(items) => {
-                    // *last_write.write().await = embassy_time::Instant::now();
+    #[cfg(not(feature = "radio"))]
+    {
+        let app = http::build_app(app_props);
 
-                    let mut full_buffer: Vec<RGB8> = Vec::new();
-
-                    full_buffer.resize(TOTAL_PIXELS, RGB8::default());
-
-                    let pixels = items
-                        .into_chunks::<3>()
-                        .into_iter()
-                        .map(|chunk| Rgb888::new(chunk[0], chunk[1], chunk[2]))
-                        .collect::<Vec<Rgb888>>();
-
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::FrameBuffer(pixels))
-                        .await;
-                }
-                WebSocketIncomingMessage::Next => {
-                    display_worker_sender.send(DisplayWorkerMessage::Next).await;
-                }
-                WebSocketIncomingMessage::Animation(animation_enum, length_ms) => {
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::Animation(animation_enum, length_ms))
-                        .await;
-                }
-                WebSocketIncomingMessage::Playlist { playlist, save } => {
-                    if save {
-                        match serde_json::to_string(&playlist) {
-                            Ok(json) => {
-                                local_fs.write_text_file(DEFAULT_PLAYLIST_FILENAME, json).await;
-                            }
-                            Err(err) => {
-                                error!("Could not serialise playlist JSON: {}", defmt::Debug2Format(&err));
-                            }
-                        }
-                    }
-
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::Playlist(playlist))
-                        .await;
-                }
-                WebSocketIncomingMessage::Reset => {
-                    if let Err(err) = local_fs.delete(DEFAULT_PLAYLIST_FILENAME).await {
-                        error!("Could not delete playlist JSON: {}", defmt::Debug2Format(&err));
-                    }
-
-                    display_worker_sender.send(DisplayWorkerMessage::Playlist(vec![])).await;
-                }
-                WebSocketIncomingMessage::ParamsBuffer(bytes) => {
-                    let params_buffer = bytes
-                        .into_chunks::<4>()
-                        .into_iter()
-                        .map(|chunk| AnimationParams::new(chunk[0], chunk[1], chunk[2], chunk[3]))
-                        .collect::<Vec<AnimationParams>>();
-
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::ParamsBuffer(params_buffer))
-                        .await;
-                }
-                WebSocketIncomingMessage::PowerLimit(power_limit) => {
-                    display_worker_sender
-                        .send(DisplayWorkerMessage::PowerLimit(power_limit))
-                        .await;
-                }
-            }
+        for id in 0..http::WEB_TASK_POOL_SIZE {
+            spawner.spawn(web_task(id, stack, app).unwrap());
         }
-    };
+    }
+
+    // Relay-served app: publish the router before any stream is accepted.
+    #[cfg(feature = "radio")]
+    firmware::tasks::tunnel::prepare(http::build_app(app_props));
+
+    let web_socket_incoming_receiver = web_socket_incoming_channel.receiver();
+
+    let ws_fut = pump::run(
+        web_socket_incoming_receiver,
+        display_worker_sender,
+        local_fs.clone(),
+        activity_watch_sender,
+    );
 
     let animation_fut = async {
         loop {
@@ -478,10 +401,6 @@ async fn main(spawner: Spawner) {
                 warn!("Reboot button pressed!");
 
                 Timer::after(Duration::from_secs(1)).await;
-
-                // display_worker_sender.send(DisplayWorkerMessage::Next).await;
-
-                // Timer::after(Duration::from_secs(1)).await;
 
                 const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
                 const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x0100;
@@ -498,71 +417,24 @@ async fn main(spawner: Spawner) {
 
 #[embassy_executor::task]
 async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, receiver: DisplayWorkerReceiver) {
-    info!("core1_task");
+    let led_screen = LedScreen::new(ws2812);
 
-    let mut led_screen = LedScreen::new(ws2812);
+    display::run(receiver, led_screen).await;
+}
 
-    led_screen.copy_eg_buffer(&[Rgb888::new(0x10, 0x10, 0x0); 2400]);
-    led_screen.flush().await;
+#[cfg(not(feature = "radio"))]
+#[embassy_executor::task(pool_size = http::WEB_TASK_POOL_SIZE)]
+async fn web_task(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppProps<ActiveBoard>>) {
+    http::web_task_body(id, stack, app).await;
+}
 
-    let mut buffer_1 = BufferTarget::new();
-    let mut buffer_2 = BufferTarget::new();
+// Generic `#[embassy_executor::task]` functions are impossible (the pool is a
+// static), so these concrete wrappers feed the shared cores in led-core the
+// executor slots they need on this target.
 
-    let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
-    let mut last_time = embassy_time::Instant::now();
-
-    let mut power_limit = 0.1f32;
-
-    loop {
-        let now = embassy_time::Instant::now();
-        let time_since_last_frame = now.duration_since(last_time);
-        let delta_ms = time_since_last_frame.as_millis() as u32;
-
-        last_time = now;
-
-        if let Ok(msg) = receiver.try_receive() {
-            match msg {
-                DisplayWorkerMessage::Next => {
-                    info!("Next");
-                    runner.next();
-                }
-                DisplayWorkerMessage::Animation(animation, length_ms) => {
-                    info!("Override Animation");
-                    runner.set_override_animation(Box::new(animation), length_ms);
-                }
-                DisplayWorkerMessage::Playlist(playlist_data) => {
-                    info!("Update playlist");
-                    if playlist_data.len() > 0 {
-                        runner.update_playlist(Playlist::new(playlist_data));
-                    } else {
-                        runner.update_playlist(Playlist::new(Playlist::get_default_playlist_data()));
-                    }
-                }
-                DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
-                DisplayWorkerMessage::ParamsBuffer(params_buffer) => {
-                    info!("Params Buffer");
-                    for params in params_buffer {
-                        runner.push_params(params);
-                    }
-                }
-                DisplayWorkerMessage::FrameBuffer(pixels) => {
-                    runner.set_suspend(10_000);
-                    let mut i = 0;
-                    for pixel in pixels {
-                        buffer_1.buffer[i] = pixel;
-                        i += 1;
-                    }
-                }
-            }
-        }
-
-        runner.update(delta_ms, &mut buffer_1, &mut buffer_2);
-
-        apply_power_limit(&mut buffer_1, power_limit);
-
-        led_screen.copy_eg_buffer(&buffer_1.buffer);
-        led_screen.flush().await;
-    }
+#[embassy_executor::task]
+async fn heartbeat_task(board: ActiveBoard) -> ! {
+    heartbeat::run(board).await
 }
 
 #[cfg(not(feature = "radio"))]
@@ -572,40 +444,15 @@ async fn defmt_runner(stack: Stack<'static>) {
     defmt_tcp::TCP_SENDER.runner(stack).await;
 }
 
-/// What the heartbeat blinks: the cyw43 LED, or (radio builds) the C3's LED.
-#[cfg(feature = "radio")]
-type Heartbeat = firmware::tasks::radio::RadioLed;
-#[cfg(not(feature = "radio"))]
-type Heartbeat = WifiControl;
-
 #[embassy_executor::task]
-async fn watchdog_runner(
-    watchdog: SharedWatchdog,
-    wifi_control: Heartbeat,
-    activity_watch: &'static mut ActivityWatchReceiver,
-) {
+async fn watchdog_runner(watchdog: SharedWatchdog) {
     let delay = Duration::from_millis(5_000);
-    let blink = Duration::from_millis(100);
 
     loop {
         Timer::after(delay).await;
 
-        // let time_since_last_activity = embassy_time::Instant::now().as_millis() - activity_watch.get().await;
-
-        // info!("time_since_last_activity: {}ms", time_since_last_activity);
-
-        // if time_since_last_activity < 60_000 {
-        //     if let Ok(mut watchdog) = watchdog.try_write() {
-        //         watchdog.feed(Duration::from_millis(15_000));
-        //     }
-        // }
-
         if let Ok(mut watchdog) = watchdog.try_write() {
             watchdog.feed(Duration::from_millis(15_000));
         }
-
-        wifi_control.blink(true).await;
-        Timer::after(blink).await;
-        wifi_control.blink(false).await;
     }
 }

@@ -7,7 +7,7 @@
 //! termination of TCP :80.
 //! Inbound browser connections are relayed to the Pico over the multiplexed
 //! frame protocol and served by picoserve through
-//! `crate::tasks::http::serve_tunnel` — the Pico runs no IP stack at all.
+//! `crate::tasks::tunnel::serve_tunnel` — the Pico runs no IP stack at all.
 //!
 //! The relay is lossless: stream payload is gated by the cumulative-ack
 //! flow-control window defined in `radio_link` (see its module docs), so a
@@ -24,7 +24,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 
-use crate::tasks::http;
+use crate::tasks::tunnel;
 use crate::tasks::usb_dbg;
 use crate::types::{EthernetSignal, EthernetSignalMessage, LedBoardConfigFile};
 use embassy_executor::Spawner;
@@ -757,8 +757,8 @@ fn station_message(status: &RadioStatus) -> Option<EthernetSignalMessage> {
 async fn serve_conn_task(id: u16, queue: &'static StreamChannel, tx: &'static TxSlot) {
     defmt::info!("radio: serving tunneled connection {}", id);
 
-    let socket = http::TunnelSocket::new(id, queue, tx);
-    match http::serve_tunnel(socket).await {
+    let socket = tunnel::TunnelSocket::new(id, queue, tx);
+    match tunnel::serve_tunnel(socket).await {
         Ok(info) => defmt::debug!(
             "radio: connection {} closed ({} requests)",
             id,

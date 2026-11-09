@@ -8,11 +8,15 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 
 | Path | What it is |
 |---|---|
-| `firmware/` | Pico 2 W (RP2351) app. Bin target `ws`. Feature matrix below. |
+| `led_core/` | **All system logic** (`no_std`): picoserve web app, WebSocket pump, display worker, heartbeat, config, screen model. Platform boundary = traits (`Board`, `OtaBackend`, `LocalFsTrait`, `Ws2812ParallelDriver`). Compiles for both thumbv8m and the host (`--features std`). |
+| `firmware/` | Pico 2 W (RP2351) hardware impl: bin target `ws`, PIO WS2812 driver, flash stores, `Board` impls (radio/cyw43), embassy-net + C3-tunnel transports. Feature matrix below. |
+| `sim/` | macOS full-system simulator (`just sim` — dot-matrix window + real web UI on :8080) + old `animation_dev` scratchpad. |
 | `radio_link/` | Shared `no_std` framed-protocol crate (Pico ↔ ESP32 slave radio over UART). |
 | `slave_radio/` | ESP32-C3 firmware (esp-hal, RISC-V). **Detached workspace** — excluded from the root workspace and has its own `Cargo.lock` + `.cargo/config.toml`. |
-| `sim/`, `ws_client/` | Host-side simulator and client. |
-| `README.md` | Authoritative pinout + wiring + architecture diagrams. |
+| `embedded_tools/` | `LocalFs`/`ConfigFile` + the **log facade** (`use embedded_tools::{info,warn,error,debug,Debug2Format}`; defmt on embedded, println on host — feature `defmt` xor `std`). |
+| `ws_client/` | Host-side client. |
+| `docs/slave-radio.md` | ESP32 slave radio: wiring, architecture, provisioning/portal behaviour. |
+| `README.md` | Authoritative pinout table + architecture diagrams (Mermaid). |
 
 ## Toolchain traps (read first)
 
@@ -31,6 +35,56 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 - Rust size/objcopy tooling: Apple's `size` can't read ELF. Use
   `$(rustc --print sysroot)/lib/rustlib/<host>/bin/llvm-size` and
   `llvm-objcopy` (or `cargo objcopy` / `cargo-binutils`).
+
+## led_core + sim: the firmware logic on the Mac (Nov 2026)
+
+`led_core` holds the whole app; `firmware` and `sim` are two platform
+impls. Run the board without hardware:
+
+```sh
+just sim      # dot-matrix window + http://localhost:8080 (PORT=… to change)
+cargo check -p sim                                   # host typecheck
+cargo check -p led-core --target thumbv8m.main-none-eabihf         # embedded build
+cargo check -p led-core --no-default-features --features std       # host build
+```
+
+Traps in this layer (all verified):
+
+- **defmt does not link on the host.** Shared crates log through the
+  embedded_tools facade (`use embedded_tools::{info, warn, error, debug,
+  Debug2Format};`), never `use defmt::*`. Feature split: embedded_tools
+  `defmt` xor `std`; led-core default = embedded (defmt), sim builds it
+  `default-features = false, features = ["std"]`. Firmware bins keep
+  plain `use defmt::*` — they're embedded-only.
+- **embassy timers are awaited from two runtimes on the sim** (picoserve's
+  ws timeouts poll on the tokio thread) → `embassy-time` needs
+  `generic-queue-8` there, else it panics "waker not created by the
+  Embassy executor".
+- **`#[embassy_executor::task]` pools cannot be generic** — led-core
+  exposes plain async fns (`display::run`, `pump::run`, `heartbeat::run`,
+  `http::web_task_body`) and each platform spawns concrete wrapper tasks
+  (`ActiveBoard` alias keeps them one type per binary).
+- **std `Executor::run` demands `&'static mut self`** — leak it on its
+  thread. The sim's display driver awaits a 2 ms timer per frame: without
+  a yield in `WindowDisplay::write` the animation loop monopolises the
+  cooperative executor (this is free on the Pico, where the PIO DMA wait
+  paces the loop).
+- The sim hands the leaked `&'static AppRouter` to the tokio thread as a
+  raw pointer (mpsc `usize`) — same pattern as the Pico's TUNNEL_APP; the
+  router is single-owner afterwards, so it needs no `Sync`.
+- **The sim serves at `http://localhost:8080/` — same host as the dummy-API
+  rule in `web/src/lib/device/index.ts`.** A page opened at `localhost` with a
+  port **other than 3000** now uses the *real* API; only `localhost:3000`
+  (vite dev) stays on dummy data. `?device=real|dummy` overrides.
+- The sim **defaults to full brightness** (posts `PowerLimit(1.0)`, unlike the
+  dark-guarded device); `SIM_POWER_LIMIT=0.1 just sim` restores device behaviour.
+- OTA on the sim is real end-to-end: `curl -X POST --data-binary @img
+  "http://localhost:8080/api/ota?$(sha256sum img)"` → verified write to
+  `tmp/host_board_firmware.bin`, then `/api/reboot` exits the sim.
+- picoserve (cjdell fork) already ships a **`tokio` feature**
+  (`Server::new_tokio`, `Socket for tokio::net::TcpStream`) — that's the
+  sim's transport; `CONFIG`/`WEB_TASK_POOL_SIZE` are re-exported from
+  `led_core::tasks::http` so both platforms share the timeouts.
 
 ## Building
 
@@ -106,6 +160,9 @@ OTA over the network: `just ota` (builds, then `curl POST /api/ota`).
 Keep `tmp/ws.elf` (copy of the release ELF) for `probe-rs attach`/`defmt-print`.
 
 ## Flashing — ESP32-C6 / C3 (`slave_radio/`)
+
+Wiring, architecture and provisioning behaviour:
+[`docs/slave-radio.md`](docs/slave-radio.md).
 
 ```sh
 just radio-flash    # build + espflash flash --partition-table partitions.csv (explicit!)
@@ -195,7 +252,10 @@ ELF — but GET status does).
 - Killing the terminal mid-`cat /dev/cu.usbmodem…` can orphan a `cat` that
   holds the port; `pkill -f 'cat /dev/cu'` if espflash can't open it.
 
-## Hardware pins (see README.md diagram for truth)
+## Hardware pins (see README.md pinout table for truth)
+
+Radio-link wiring and the C3/C6 side of the link:
+[`docs/slave-radio.md`](docs/slave-radio.md).
 
 - Pico UART0 → C3 link: **GP12 = TX → C3 GPIO20**, **GP13 = RX ← C3 GPIO21**
   (C3 uses UART1 there; its GPIO matrix allows other free GPIOs too).
@@ -235,8 +295,13 @@ ELF — but GET status does).
   Wifi builds are `wifi,defmt_tcp` and logs come via
   `defmt-print ... tcp --port 19021`. `scripts/stress_wifi.sh` captures it and
   reports per-load throughput with the stress.sh acceptance bar.
+- **Bundle size note (Nov 2026)**: `web/compress.ts` opened the .gz without
+  `truncate: true`, so an older longer bundle left stale trailing bytes after
+  a re-compress (the "73,541 B SPA" figure in old acceptance notes was 69,786 B
+  of gzip + ~3.7 KB of garbage; browsers tolerated it). Fixed; a clean build
+  is now **69,786 B**. Re-run `web/compile.sh` before flashing UI changes.
 - **Wi-Fi acceptance PASSED (Nov 2026)**: `HOST=http://<ip>/ ./scripts/stress_wifi.sh`
-  → 15/15 identical 73,541 B loads, one sha256 group, 0 curl failures, 0 guard
+  → 15/15 identical 73,541 B loads (pre-truncate-fix number), one sha256 group, 0 curl failures, 0 guard
   trips. Singles ≈0.16 s (≈3.3–3.7 Mbit/s), 4-bursts ≈0.3–0.5 s (≈1.2–2 Mbit/s)
   — 7–10× the radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800 UART), so the slave
   radio is demoted to a provisioning/legacy option, not the throughput path.
@@ -265,6 +330,9 @@ ELF — but GET status does).
 Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (508 K slot; ~36 K headroom on wifi —
 `wifi,defmt_tcp,console` does **not** fit); C3 ≈ 690 KB
 (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure anywhere.
+(Nov 2026 re-measure after the led-core refactor + clean bundle: radio
+447,144 B, wifi 485,796 B — unchanged conclusions; both ~3.7 K smaller than
+before, which is the garbage-free bundle.)
 
 ## Protocol notes
 

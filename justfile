@@ -1,8 +1,18 @@
+# Put rustup's shims first so every recipe honors rust-toolchain.toml.
+# Homebrew's /opt/homebrew/bin/cargo is a plain stable toolchain: it ignores
+# the pin and dies on `#![feature(...)]` (E0554) with no embedded targets.
+export PATH := home_directory() / ".cargo/bin:" + env_var("PATH")
+
 default:
     @ {{just_executable()}} --list --justfile {{justfile()}} --unsorted
     
+# Full-system simulator: dot-matrix window + the real web UI (http://localhost:8080)
 sim:
-    cargo run -r -p sim
+    cargo run -r -p sim --bin sim
+
+# Old animation-only scratchpad (keyboard, no web app)
+sim-animations:
+    cargo run -r -p sim --bin animation_dev
 
 ws_client:
     RUST_LOG=debug cargo run -r -p ws_client

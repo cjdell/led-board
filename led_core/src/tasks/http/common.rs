@@ -1,4 +1,3 @@
-use alloc::string::ToString;
 use embedded_io_async::{Read, Write};
 use picoserve::{
     ResponseSent,
@@ -8,7 +7,8 @@ use picoserve::{
     routing::PathRouterService,
 };
 
-#[unsafe(link_section = ".rodata.mydata")]
+// The `.rodata.mydata` placement is a Pico link-layout hint only.
+#[cfg_attr(not(feature = "std"), unsafe(link_section = ".rodata.mydata"))]
 #[used]
 static HTML_DATA: &[u8] = include_bytes!("../../../../web/bundle/index.html.gz");
 

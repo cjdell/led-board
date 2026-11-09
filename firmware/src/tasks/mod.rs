@@ -1,5 +1,12 @@
 pub mod common;
-pub mod http;
+
+// The picoserve web app itself is shared system logic (led-core); the
+// tunnel below is the Pico's radio-specific transport for it.
+pub use led_core::tasks::http;
+
+#[cfg(feature = "radio")]
+pub mod tunnel;
+
 pub mod ppp;
 #[cfg(feature = "radio")]
 pub mod radio;

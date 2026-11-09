@@ -1,5 +1,5 @@
-use crate::types::*;
-use embedded_tools::config::ConfigFileTrait as _;
+use crate::config::LedBoardConfig;
+use embedded_tools::config::ConfigFileTrait;
 use picoserve::{
     ResponseSent,
     io::Read,
@@ -8,17 +8,17 @@ use picoserve::{
     routing::RequestHandlerService,
 };
 
-pub struct GetConfigHandler {
-    config_file: LedBoardConfigFile,
+pub struct GetConfigHandler<CF> {
+    config_file: CF,
 }
 
-impl GetConfigHandler {
-    pub fn new(config_file: LedBoardConfigFile) -> Self {
+impl<CF> GetConfigHandler<CF> {
+    pub fn new(config_file: CF) -> Self {
         Self { config_file }
     }
 }
 
-impl RequestHandlerService<()> for GetConfigHandler {
+impl<CF: ConfigFileTrait<LedBoardConfig>> RequestHandlerService<()> for GetConfigHandler<CF> {
     async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         _: &(),
@@ -37,17 +37,20 @@ impl RequestHandlerService<()> for GetConfigHandler {
     }
 }
 
-pub struct SaveConfigHandler {
-    config_file: LedBoardConfigFile,
+pub struct SaveConfigHandler<CF, B: crate::board::Board> {
+    config_file: CF,
+    board: B,
 }
 
-impl SaveConfigHandler {
-    pub fn new(config_file: LedBoardConfigFile) -> Self {
-        Self { config_file }
+impl<CF, B: crate::board::Board> SaveConfigHandler<CF, B> {
+    pub fn new(config_file: CF, board: B) -> Self {
+        Self { config_file, board }
     }
 }
 
-impl RequestHandlerService<()> for SaveConfigHandler {
+impl<CF: ConfigFileTrait<LedBoardConfig>, B: crate::board::Board> RequestHandlerService<()>
+    for SaveConfigHandler<CF, B>
+{
     async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         _: &(),
@@ -56,11 +59,6 @@ impl RequestHandlerService<()> for SaveConfigHandler {
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
         let buffer = read_request_to_buffer!(req, writer);
-
-        // let buffer = match request.body_connection.body().read_all().await {
-        //     Ok(buffer) => buffer,
-        //     Err(err) => return format_response!(request, response_writer, "Error reading request: {err:?}"),
-        // };
 
         if let Err(err) = self.config_file.set_json(&buffer).await {
             return format_response!(req, writer, "Error applying JSON: {err:?}");
@@ -71,8 +69,7 @@ impl RequestHandlerService<()> for SaveConfigHandler {
         }
 
         // Mirror the updated WiFi config to the ESP32-C3 slave radio (no-op without the radio build).
-        #[cfg(feature = "radio")]
-        crate::tasks::radio::sync_config(self.config_file.clone()).await;
+        self.board.config_saved().await;
 
         format_response!(req, writer, "Done")
     }

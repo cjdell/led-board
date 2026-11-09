@@ -2,7 +2,7 @@ pub mod storage;
 
 use crate::config::storage::ConfigFileStorage;
 use alloc::{format, string::String, sync::Arc};
-use defmt::*;
+use crate::{Debug2Format, info, warn};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, rwlock::RwLock};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -38,7 +38,7 @@ impl<STATE: Clone + DeserializeOwned + Serialize, STORAGE: ConfigFileStorage> Co
         let json = match self.read_json().await {
             Ok(json) => json,
             Err(err) => {
-                warn!("ConfigFile: Could not read JSON! {:?}", defmt::Debug2Format(&err));
+                warn!("ConfigFile: Could not read JSON! {:?}", Debug2Format(&err));
                 return;
             }
         };
@@ -48,7 +48,7 @@ impl<STATE: Clone + DeserializeOwned + Serialize, STORAGE: ConfigFileStorage> Co
             Err(err) => {
                 warn!(
                     "ConfigFile: Could not decode JSON! {:?} {}",
-                    defmt::Debug2Format(&err),
+                    Debug2Format(&err),
                     json.as_str()
                 );
                 return;
@@ -101,7 +101,7 @@ impl<STATE: Clone + DeserializeOwned + Serialize, STORAGE: ConfigFileStorage> Co
     async fn save(&self) -> Result<(), StateError> {
         let json = self.get_json().await?;
 
-        info!("ConfigFile.save: {}", defmt::Debug2Format(&json));
+        info!("ConfigFile.save: {}", Debug2Format(&json));
 
         self.storage
             .write_json(json)

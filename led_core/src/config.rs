@@ -3,6 +3,7 @@ use alloc::string::ToString as _;
 use alloc::vec;
 use alloc::{string::String, vec::Vec};
 use embedded_tools::config::{ConfigFileTrait as _, StateError};
+use embedded_tools::local_fs::LocalFsTrait;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PLAYLIST_FILENAME: &str = "playlist_default.json";
@@ -42,7 +43,7 @@ pub trait LedBoardConfigurator {
     fn remove_known_wifi_network(&self, ssid: String) -> impl Future<Output = Result<bool, StateError>>;
 }
 
-impl LedBoardConfigurator for LedBoardConfigFile {
+impl<FS: LocalFsTrait> LedBoardConfigurator for LedBoardConfigFile<FS> {
     async fn add_known_wifi_network(&self, ssid: String, pass: String) -> Result<(), StateError> {
         let mut data = self.get_data().await;
 

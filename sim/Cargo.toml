@@ -2,9 +2,62 @@
 name = "sim"
 version = "0.1.0"
 edition = "2024"
+default-run = "sim"
+
+# Full-system simulator: runs led-core (web app, pump, display worker,
+# heartbeat) on the Mac with a dot-matrix window, a localhost web server,
+# and a directory as the filesystem — the same system logic as the Pico.
+[[bin]]
+name = "sim"
+path = "src/main.rs"
+
+# Old animation-only scratchpad harness (keyboard-driven, no web app).
+[[bin]]
+name = "animation_dev"
+path = "src/bin/animation_dev.rs"
 
 [dependencies]
+led-core = { path = "../led_core", default-features = false, features = ["std"] }
+embedded-tools = { path = "../embedded_tools", features = ["std"] }
 animations = { path = "../animations", features = ["std"] }
 
-embedded-graphics = "0.8.2"
+picoserve = { git = "https://github.com/cjdell/picoserve.git", features = [
+    "alloc",
+    "embassy",
+    "ws",
+    "json",
+    "tokio",
+] }
+
+tokio = { version = "1.32.0", features = [
+    "rt",
+    "net",
+    "io-util",
+    "time",
+    "macros",
+    "sync",
+] }
+
 minifb = "0.28.0"
+sha2 = "0.10"
+
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "platform-std",
+    "executor-thread",
+] }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git" }
+# generic-queue: embassy timers are awaited from BOTH the embassy executor
+# thread and the tokio web thread (picoserve's ws timeouts) — the plain std
+# driver only accepts its own executor's wakers.
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "std",
+    "generic-queue-8",
+] }
+
+critical-section = { version = "1.2", features = ["std"] }
+
+embedded-graphics = "0.8.2"
+smart-leds = "0.4.0"
+
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"

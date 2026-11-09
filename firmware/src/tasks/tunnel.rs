@@ -1,15 +1,16 @@
-//! A [`picoserve::io::Socket`] backed by a UART stream slot relayed from the
-//! ESP32-C3 slave radio (see [`crate::tasks::radio`]).
-//!
-//! The C3 terminates TCP and pipes the bytes over the link; this adapter
-//! presents them to picoserve as an ordinary socket so the whole web app —
-//! HTTP, WebSockets, OTA — works with no IP stack on the Pico.
+//! Pico-side transport for the shared picoserve app when the ESP32 slave
+//! radio owns TCP: relayed streams from [`crate::tasks::radio`] are served
+//! with led-core's router through [`serve_tunnel`].
 
 use alloc::vec::Vec;
 
-use embedded_io_async::{ErrorType, Read, ReadReady, Write};
-use picoserve::{EmbassyRuntime, NoGracefulShutdown, Timeouts, io::Socket, time::Timer};
+use core::sync::atomic;
 
+use embedded_io_async::{ErrorType, Read, ReadReady, Write};
+use led_core::tasks::http::{AppProps, CONFIG};
+use picoserve::{AppRouter, EmbassyRuntime, NoGracefulShutdown, Server, Timeouts, io::Socket, time::Timer};
+
+use crate::board::RadioBoard;
 use crate::tasks::radio::{self, StreamChannel, StreamChunk, TxSlot};
 
 /// Socket IO error (the underlying link is CRC-guarded and self-healing, so
@@ -198,3 +199,32 @@ impl Socket<EmbassyRuntime> for TunnelSocket {
 
 /// Marker used for the disconnection info of tunnel connections.
 pub type TunnelDisconnection = picoserve::DisconnectionInfo<NoGracefulShutdown>;
+
+/// App router pointer for tunnel serving. Stored as an integer because the
+/// router type (via `LocalFs`) is intentionally not `Sync` — a single static
+/// instance shared across connection tasks on one executor.
+static TUNNEL_APP: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
+
+/// Publish the built app router before any relayed connection arrives.
+pub fn prepare(app: &'static AppRouter<AppProps<RadioBoard>>) {
+    let ptr: *const AppRouter<AppProps<RadioBoard>> = app;
+    TUNNEL_APP.store(ptr as usize, atomic::Ordering::Relaxed);
+}
+
+/// Serve HTTP requests over a single relayed TCP connection from the C3.
+pub async fn serve_tunnel(
+    socket: TunnelSocket,
+) -> Result<picoserve::DisconnectionInfo<NoGracefulShutdown>, picoserve::Error<TunnelError>> {
+    let app = {
+        let ptr = TUNNEL_APP.load(atomic::Ordering::Relaxed);
+        if ptr == 0 {
+            defmt::panic!("prepare must run before serving");
+        }
+        unsafe { &*(ptr as *const AppRouter<AppProps<RadioBoard>>) }
+    };
+
+    let mut http_buffer = Vec::new();
+    http_buffer.resize(8 * 1024, 0);
+
+    Server::new(app, &CONFIG, http_buffer.as_mut()).serve(socket).await
+}

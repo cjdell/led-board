@@ -4,7 +4,7 @@ use alloc::{
     vec::Vec,
 };
 use core::str::{Utf8Error, from_utf8};
-use defmt::info;
+use crate::info;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use littlefs_rust::{Config, Filesystem, OpenFlags, SeekFrom, Storage};
 

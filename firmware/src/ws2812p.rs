@@ -85,7 +85,10 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
     }
 }
 
-const N_STRIPS: usize = 8;
+// The strip count and the driver contract are defined by the shared screen
+// model (led-core); this file is the PIO implementation of that contract.
+use led_core::led_screen::{Ws2812ParallelDriver, N_STRIPS};
+
 const BITS: usize = 24;
 
 /// Parallel WS2812 driver for 8 simultaneous strips.
@@ -229,10 +232,6 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
 
     //     Timer::after_micros(55).await;
     // }
-}
-
-pub trait Ws2812ParallelDriver<const N_LEDS: usize> {
-    fn write(&mut self, colors: &[[RGB8; N_LEDS]; N_STRIPS]) -> impl Future<Output = ()>;
 }
 
 impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs2812ParallelDriver<'_, P, 0, N_LEDS> {

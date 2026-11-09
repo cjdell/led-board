@@ -1080,6 +1080,7 @@ dependencies = [
  "defmt 1.1.0",
  "document-features",
  "embassy-time-driver",
+ "embassy-time-queue-utils",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -1483,6 +1484,7 @@ dependencies = [
  "fixed",
  "heapless 0.9.3",
  "hex",
+ "led-core",
  "littlefs-rust",
  "miniz_oxide",
  "num-traits",
@@ -2292,6 +2294,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
+name = "led-core"
+version = "0.1.0"
+dependencies = [
+ "animations",
+ "defmt 1.1.0",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embedded-graphics",
+ "embedded-io 0.7.1",
+ "embedded-io-async 0.7.0",
+ "embedded-tools",
+ "miniz_oxide",
+ "picoserve",
+ "serde",
+ "serde_json",
+ "smart-leds",
+ "static_cell",
+]
+
+[[package]]
 name = "lhash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2768,6 +2792,7 @@ dependencies = [
  "serde",
  "serde-json-core",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -3196,7 +3221,7 @@ dependencies = [
  "embassy-time",
  "embedded-io-async 0.7.0",
  "hex",
- "sha2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -3430,6 +3455,17 @@ checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
 
 [[package]]
 name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
@@ -3481,8 +3517,20 @@ name = "sim"
 version = "0.1.0"
 dependencies = [
  "animations",
+ "critical-section",
+ "embassy-executor",
+ "embassy-sync 0.8.0",
+ "embassy-time",
  "embedded-graphics",
+ "embedded-tools",
+ "led-core",
  "minifb",
+ "picoserve",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "smart-leds",
+ "tokio",
 ]
 
 [[package]]

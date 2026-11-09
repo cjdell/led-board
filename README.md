@@ -1,111 +1,94 @@
-# Raspberry Pi Pico 2 W
+# LED Art Board
 
-## Wiring:
+Rust firmware for a Raspberry Pi Pico 2 W (RP2351) LED art board: 8 parallel
+WS2812 strips driven by PIO, a picoserve web UI with WebSocket control, config
+and OTA over HTTP, and an optional ESP32-C3/C6 slave-radio transport. The
+whole system logic lives in `led_core` and runs **unmodified on the Mac** —
+`just sim` opens a dot-matrix window of the real matrix driven by the same
+firmware tasks, serving the real web UI at `http://localhost:8080`.
 
-                      |    |
-               =======|    |=======
-                | GP0         VBUS |   ──► radio VIN (5 V)
-                | GP1         VSYS |
-                | GND         GND  |   ◄── radio GND
-      STRIP 0   | GP2           EN |
-      STRIP 1   | GP3         3_3V |
-      STRIP 2   | GP4         VREF |
-      STRIP 3   | GP5         GP28 |
-                | GND         GND  |
-      STRIP 4   | GP6         GP27 |
-      STRIP 5   | GP7         GP26 |
-      STRIP 6   | GP8          RUN |
-      STRIP 7   | GP9         GP22 |
-                | GND         GND  |
-                | GP10        GP21 |
-                | GP11        GP20 |
-        radio RX| GP12        GP19 |
-        radio TX| GP13        GP18 |
-                | GND         GND  |
-                | GP14        GP17 |
-                | GP15        GP16 |
-               ====================
+- Agent / build / flashing notes: [`AGENTS.md`](AGENTS.md)
+- ESP32 slave radio (wiring, architecture, provisioning): [`docs/slave-radio.md`](docs/slave-radio.md)
 
-### ESP32 slave radio (optional, `radio` build)
+## Architecture
 
-The cyw43 WiFi on the Pico 2 W is flaky in some environments, so the firmware
-has a `radio` build where an ESP32-C3 **or ESP32-C6** acts as the board's
-radio. Four wires between the Pico and the radio MCU:
+```mermaid
+flowchart TD
+    subgraph LC["led_core — no_std system logic (shared)"]
+        HTTP["http: picoserve web app,<br/>WS handler, APIs"]
+        TASKS["display / pump /<br/>heartbeat tasks"]
+        CORE["config store · types ·<br/>led_screen model"]
+        TRAITS["hardware boundary = traits:<br/>Board · OtaBackend · LocalFsTrait ·<br/>Ws2812ParallelDriver · Socket"]
+    end
 
-| Pico 2 W (RP2350) | Direction | ESP32-C3 / ESP32-C6 |
-|-------------------|-----------|---------------------|
-| GP12 (UART0 TX)   | →         | GPIO20 (UART1 RX)   |
-| GP13 (UART0 RX)   | ←         | GPIO21 (UART1 TX)   |
-| GND               | —         | GND                 |
-| VBUS (5 V)        | →         | VIN / 5V            |
+    subgraph FW["firmware — Pico 2 W"]
+        EMB1["embassy-executor + embassy-net:<br/>wifi · usb-cdc-ncm · ppp · C3 tunnel"]
+        PIO["PIO1 SM0–3 →<br/>WS2812 ×8 strips (GP2–GP9)"]
+    end
 
-921600 baud, 8N1. GPIO20/21 are UART1's default pads on the C3 and valid
-UART1 matrix pins on the C6, so the firmware (`slave_radio`, one codebase,
-`esp32c3`/`esp32c6` features) wires both chips identically.
+    subgraph SIM["sim — macOS"]
+        TOK["embassy-executor (generic-queue) +<br/>tokio accept → picoserve new_tokio"]
+        WIN["minifb 32×31 dot-matrix window<br/>+ tmp/host_board/ files"]
+    end
 
-The C6 drains this UART with its UHCI DMA engine, and stream data is windowed
-(TCP-style cumulative acks, see `radio_link`), so the relay is lossless:
-buffer pressure pauses the producer instead of dropping bytes.
+    LC --> FW
+    LC --> SIM
 
-> **Bench note:** while each board is plugged into a computer, **omit the VIN
-> wire** and power both from their own USB — back-feeding 5 V into an already
-> USB-powered radio board can trip the port's protection (this killed the C3's
-> USB enumeration whenever the link wiring was attached; revisit on a known-good
-> board). VIN belongs to the final build only, where the radio draws its 5 V
-> from the Pico's VBUS rail.
-
-The C3 draws < 350 mA peak from that rail; if you inject 5 V into the strip's
-rail, power the radio from the same supply instead of VBUS. Any ESP32-C3 with
-≥ 4 MB flash works (GPIO8 drives the SuperMini status LED, active-low). On the
-C6-Zero bench: join + DHCP verified end-to-end (Leighhack, WPA2); double-check
-that GPIO20/21 are broken out on your header before wiring the link — the C6's
-GPIO matrix can move UART1 to any free pins (`with_tx`/`with_rx` in
-`slave_radio/src/bin/slave_radio.rs`) if they aren't.
-
-## ESP32 slave radio architecture
-
-```
-WiFi LAN ══════► C3 STA :80 ─┐                      ┌──► picoserve web app
-                  (fallback:  ├─ radio_link (UART) ──┤   (unchanged: /api/ws,
-AP + portal :80) C3 AP :80 ──┘   framed + CRC16      │   /api/config, /api/wifi,
-                                                      │   /api/ota, …)
-Pico runs NO IP stack. The radio (C3 or C6) owns WiFi entirely:
- • joins the strongest saved network; on failure it falls back to an open
-   AP + DHCP/captive-DNS portal (http://192.168.2.1/) with a WiFi-connect UI
- • mDNS: led-board.local on whichever interface is up
- • persists saved networks in flash (cfg partition), kept in sync with the
-   Pico's config.json (Pico config wins at boot; Pico pushes on every save)
- • the built-in portal answers /api/wifi (scan/join) locally while the Pico's
-   full app is still reachable through the fallback AP via the relay
+    BR["Browser"] -->|WiFi LAN| RADIO["ESP32-C3/C6<br/>WiFi + TCP"]
+    RADIO -->|"UART0 GP12/GP13<br/>radio_link"| FW
+    BR -->|usb-eth / ppp / wifi| FW
 ```
 
-Everything the Pico needs from the radio (scan, join, status, LED) travels as
-JSON RPC over the same link (`radio_link` crate); browser connections are
-relayed as multiplexed byte streams — see `radio_link/src/lib.rs` for the
-framing spec.
+| Crate | Role |
+|---|---|
+| `led_core/` | all system logic (web app, tasks, config, screen model), platform-agnostic |
+| `firmware/` | Pico 2 W hardware impl: PIO WS2812, flash stores, `Board` impls, transports |
+| `sim/` | macOS full-system simulator + `animation_dev` scratchpad (`just sim`) |
+| `radio_link/` | shared framed protocol between Pico and ESP32 slave radio |
+| `slave_radio/` | ESP32-C3/C6 firmware (esp-hal), own workspace |
+| `embedded_tools/` | `LocalFs` on Pico flash + the log facade (defmt on embedded, println on host) |
+| `ws_client/` | host-side WebSocket client |
 
-### Building & flashing the radio firmware
+Task bodies are plain async fns shared by both platforms — the firmware and
+the sim run identical logic against different trait implementations.
+
+## Pinout: Pico 2 W
+
+Left column = GP0–GP15 side; right column = VBUS side. Pin 1 (VBUS) is the
+top-right corner.
+
+| Left   | Use                    | Right  | Use               |
+|--------|------------------------|--------|-------------------|
+| GP0    | —                      | VBUS   | → radio VIN (5 V) |
+| GP1    | —                      | VSYS   | —                 |
+| GND    | —                      | GND    | ← radio GND       |
+| GP2    | STRIP 0                | EN     | —                 |
+| GP3    | STRIP 1                | 3V3    | —                 |
+| GP4    | STRIP 2                | VREF   | —                 |
+| GP5    | STRIP 3                | GP28   | —                 |
+| GND    | —                      | GND    | —                 |
+| GP6    | STRIP 4                | GP27   | —                 |
+| GP7    | STRIP 5                | GP26   | —                 |
+| GP8    | STRIP 6                | RUN    | —                 |
+| GP9    | STRIP 7                | GP22   | —                 |
+| GP10   | —                      | GP21   | —                 |
+| GP11   | —                      | GP20   | —                 |
+| GP12   | radio link TX (UART0)  | GP19   | —                 |
+| GP13   | radio link RX (UART0)  | GP18   | —                 |
+| GND    | —                      | GND    | —                 |
+| GP14   | —                      | GP17   | —                 |
+| GP15   | —                      | GP16   | —                 |
+
+Strips 0–7 on GP2–GP9 (PIO1, WS2812 at 5 V). The radio link is UART0 at
+460800 baud — GP12 → the radio's RX pin, GP13 ← its TX; the full C3/C6
+wiring is in [`docs/slave-radio.md`](docs/slave-radio.md). GP0/GP1 are
+spare (alternate UART0 pads for a debug console). On `wifi` builds GP23/24/25/29
+are consumed by the cyw43.
+
+## Quick start
 
 ```sh
-cd slave_radio
-cargo build --release            # C3 (default feature), or: just radio-build
-just radio-flash                 # espflash flash --partition-table partitions.csv --monitor
-
-# ESP32-C6 (rv32imac target + esp32c6 chip feature; same 4MB partition table):
-just radio-c6-flash              # = cargo build --release --no-default-features \
-                                 #   --features esp32c6 --target riscv32imac-unknown-none-elf \
-                                 #   && espflash flash --partition-table partitions.csv …
+just sim            # macOS simulator: window + web UI at http://localhost:8080
+just main           # interactive fzf picker: transport, network → build → flash → attach
+just radio-flash    # ESP32 slave radio firmware (see docs/slave-radio.md)
 ```
-
-### Running the board with the slave radio
-
-```sh
-just main        # choose network transport "radio" (radio,defmt_rtt build)
-# or explicitly:
-cargo objcopy --release -p firmware --features radio,defmt_rtt --bin ws \
-    --target thumbv8m.main-none-eabihf -- -O binary tmp/ws.bin
-```
-
-Once the radio answers HELLO, the Pico pushes its saved WiFi networks (or adopts
-the radio's when its own config is empty). Connect to `http://led-board.local/`
-as before — the web app, WebSocket control, and OTA all work unchanged.

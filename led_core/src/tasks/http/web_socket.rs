@@ -1,8 +1,7 @@
 use crate::types::*;
 use alloc::vec::Vec;
 use animations::TOTAL_PIXELS;
-use defmt::*;
-use embedded_tools::sleep;
+use embedded_tools::{Debug2Format, error, info, sleep, warn};
 use picoserve::{
     futures::Either,
     response::ws::{Message, SocketRx, SocketTx, WebSocketCallback},
@@ -14,9 +13,7 @@ pub struct WebSocketHandler {
 
 impl WebSocketHandler {
     pub fn new(web_socket_incoming_sender: WebSocketIncomingSender) -> Self {
-        Self {
-            web_socket_incoming_sender,
-        }
+        Self { web_socket_incoming_sender }
     }
 }
 
@@ -52,7 +49,7 @@ impl WebSocketCallback for WebSocketHandler {
                     let message = match serde_json::from_str(message) {
                         Ok(message) => message,
                         Err(err) => {
-                            error!("Serde Error: {:?}", defmt::Debug2Format(&err));
+                            error!("Serde Error: {:?}", Debug2Format(&err));
                             continue;
                         }
                     };
@@ -77,7 +74,7 @@ impl WebSocketCallback for WebSocketHandler {
                 }
                 Message::Ping(ping) => tx.send_pong(ping).await?,
                 Message::Pong(_) => (),
-            };
+            }
         };
 
         let close_fut = tx.close(close_reason).await;

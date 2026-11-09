@@ -6,6 +6,7 @@ members = [
     "defmt_tcp",
     "embedded_tools",
     "firmware",
+    "led_core",
     "rp235x_embedded_tools",
     "radio_link",
     "rp235x_ota",

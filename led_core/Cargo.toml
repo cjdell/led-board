@@ -1,0 +1,59 @@
+[package]
+name = "led-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["Chris Dell <cjdell@gmail.com>"]
+description = """
+System logic for the LED art board: picoserve web app, WebSocket control
+pump, animation display worker, config and the dot-matrix screen driver
+contract. `no_std` core logic with the platform boundary expressed as
+traits (`Board`, `OtaBackend`, `LocalFsTrait`) — the RP2350 firmware and
+the macOS simulator are two implementations of the same system.
+"""
+
+[features]
+# Embedded is the default so `firmware` needs no feature plumbing; the
+# simulator builds with `default-features = false, features = ["std"]`.
+default = ["defmt", "embedded-tools/defmt"]
+# Host build (macOS simulator). Forwards to the dual-target support crates.
+std = ["embedded-tools/std", "animations/std"]
+
+[dependencies]
+embedded-tools = { path = "../embedded_tools", default-features = false }
+# Re-exported by embedded_tools' log facade; defmt macro expansions name
+# `::defmt` directly, so the crate using them must link it too (embedded
+# builds only — the host facade shadows these with println macros).
+defmt = { version = "1.1.0", optional = true }
+animations = { path = "../animations", default-features = false, features = ["critical-section"] }
+
+picoserve = { git = "https://github.com/cjdell/picoserve.git", features = [
+    "alloc",
+    "embassy",
+    "ws",
+    "json",
+] }
+
+serde = { version = "1.0.228", default-features = false, features = [
+    "alloc",
+    "derive",
+] }
+serde_json = { version = "1.0.150", default-features = false, features = [
+    "alloc",
+] }
+
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+static_cell = "2.1.1"
+
+embedded-graphics = "0.8.2"
+embedded-io = "0.7.1"
+embedded-io-async = "0.7.0"
+smart-leds = "0.4.0"
+
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
+    "tcp",
+    "medium-ethernet",
+] }
+

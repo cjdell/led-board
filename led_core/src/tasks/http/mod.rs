@@ -1,75 +1,71 @@
 #[macro_use]
 mod macros;
 
-mod common;
+pub mod common;
 mod config;
 mod info;
 mod ota;
 mod web_socket;
 mod wifi;
 
-#[cfg(feature = "radio")]
-pub mod tunnel;
-
-use crate::{
-    tasks::http::{
-        common::*,
-        config::{GetConfigHandler, SaveConfigHandler},
-        info::{GetAnimationsHandler, GetPlaylistHandler},
-        ota::OtaUpdateHandler,
-        web_socket::WebSocketHandler,
-        wifi::{JoinStatusHandler, WifiForgetHandler, WifiJoinHandler, WifiNetworksHandler, WifiScanHandler},
-    },
-    types::*,
+use crate::board::Board;
+use crate::tasks::http::{
+    common::*,
+    config::{GetConfigHandler, SaveConfigHandler},
+    info::{GetAnimationsHandler, GetPlaylistHandler},
+    ota::OtaUpdateHandler,
+    web_socket::WebSocketHandler,
+    wifi::{JoinStatusHandler, WifiForgetHandler, WifiJoinHandler, WifiNetworksHandler, WifiScanHandler},
 };
-use alloc::{boxed::Box, vec::Vec};
-use defmt::*;
-use embassy_executor::Spawner;
+use crate::types::*;
+use alloc::boxed::Box;
 use embassy_net::Stack;
+use embedded_tools::info;
 use picoserve::{
-    AppBuilder, AppRouter, Router, Server, make_static,
+    AppBuilder, AppRouter, Router, Server,
     response::WebSocketUpgrade,
     routing::{PathRouter, get, get_service, post, post_service},
 };
-use rp235x_embedded_tools::flash::FlashStorage;
 
-#[cfg(feature = "radio")]
-pub use tunnel::TunnelSocket;
-
-pub struct AppProps {
+/// Everything the web app needs from the running system, cloned into the
+/// routes at build time. `B` is the machine the app is running on — the
+/// Pico firmware or the simulator pass their own implementation.
+pub struct AppProps<B: Board> {
     web_socket_incoming_sender: WebSocketIncomingSender,
-    flash_storage: FlashStorage,
-    local_fs: LocalFs,
-    config_file: LedBoardConfigFile,
-    watchdog: SharedWatchdog,
+    ota: B::Ota,
+    local_fs: B::Fs,
+    config_file: LedBoardConfigFile<B::Fs>,
+    board: B,
 }
 
-impl AppProps {
+impl<B: Board> AppProps<B> {
     pub fn new(
         web_socket_incoming_sender: WebSocketIncomingSender,
-        flash_storage: FlashStorage,
-        local_fs: LocalFs,
-        config_file: LedBoardConfigFile,
-        watchdog: SharedWatchdog,
+        ota: B::Ota,
+        local_fs: B::Fs,
+        config_file: LedBoardConfigFile<B::Fs>,
+        board: B,
     ) -> Self {
         Self {
             web_socket_incoming_sender,
-            flash_storage,
+            ota,
             local_fs,
             config_file,
-            watchdog,
+            board,
         }
     }
 }
 
-impl AppBuilder for AppProps {
+impl<B: Board> AppBuilder for AppProps<B> {
     type PathRouter = impl PathRouter;
 
     fn build_app(self) -> Router<Self::PathRouter> {
-        // These handles are cheap `Arc`-backed shared state: move one in and
+        // These handles are cheap clones of shared state: move one in and
         // clone at each registration point instead of numbered copies.
+        let board = self.board;
         let config_file = self.config_file;
         let local_fs = self.local_fs;
+        let ota = self.ota;
 
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
@@ -83,33 +79,36 @@ impl AppBuilder for AppProps {
                     .route(
                         "/config",
                         get_service(GetConfigHandler::new(config_file.clone()))
-                            .post_service(SaveConfigHandler::new(config_file.clone())),
+                            .post_service(SaveConfigHandler::new(config_file.clone(), board.clone())),
                     )
                     .route(
                         "/reboot",
-                        post(async || {
-                            embassy_rp::rom_data::reboot(0, 10, 0, 0);
-                            "Unreachable"
+                        post({
+                            let board = board.clone();
+                            async move || {
+                                board.reboot().await;
+                                "Unreachable"
+                            }
                         })
                         .options(async || cors_options_response()),
                     )
                     .route(
                         "/wifi",
-                        get_service(WifiScanHandler::new())
-                            .post_service(WifiJoinHandler::new(config_file.clone()))
+                        get_service(WifiScanHandler::<B>::new(board.clone()))
+                            .post_service(WifiJoinHandler::<B>::new(config_file.clone(), board.clone()))
                             .options(async || cors_options_response()),
                     )
                     .route(
                         "/networks",
-                        get_service(WifiNetworksHandler::new(config_file.clone()))
+                        get_service(WifiNetworksHandler::<B>::new(config_file.clone()))
                             .options(async || cors_options_response()),
                     )
                     .route(
                         "/forget",
-                        post_service(WifiForgetHandler::new(config_file.clone()))
+                        post_service(WifiForgetHandler::<B>::new(config_file.clone(), board.clone()))
                             .options(async || cors_options_response()),
                     )
-                    .route("/join-status", get_service(JoinStatusHandler))
+                    .route("/join-status", get_service(JoinStatusHandler::<B>::new(board.clone())))
                     .nest(
                         "/info",
                         Router::new()
@@ -128,7 +127,7 @@ impl AppBuilder for AppProps {
                     )
                     .route(
                         "/ota",
-                        post_service(OtaUpdateHandler::new(self.flash_storage.clone(), self.watchdog.clone()))
+                        post_service(OtaUpdateHandler::<B>::new(ota.clone(), board.clone()))
                             .options(async || cors_options_response()),
                     ),
             )
@@ -140,17 +139,25 @@ impl AppBuilder for AppProps {
     }
 }
 
-const WEB_TASK_POOL_SIZE: usize = 5;
+pub const WEB_TASK_POOL_SIZE: usize = 5;
 
-static CONFIG: picoserve::Config = picoserve::Config::new(picoserve::Timeouts {
+pub static CONFIG: picoserve::Config = picoserve::Config::new(picoserve::Timeouts {
     start_read_request: picoserve::time::Duration::from_secs(300),
     persistent_start_read_request: picoserve::time::Duration::from_secs(300),
     read_request: picoserve::time::Duration::from_secs(300),
     write: picoserve::time::Duration::from_secs(300),
 });
 
-#[embassy_executor::task(pool_size = WEB_TASK_POOL_SIZE)]
-async fn web_task(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppProps>) -> ! {
+/// Leak the finished router so connection tasks on any runtime (embassy
+/// executor here, tokio in the simulator) can share it by `&'static`.
+pub fn build_app<B: Board>(props: AppProps<B>) -> &'static AppRouter<AppProps<B>> {
+    Box::leak(Box::new(props.build_app()))
+}
+
+/// Per-connection body of an embassy-net web task: serve HTTP on one
+/// listener slot. `#[embassy_executor::task]` pools cannot be generic, so
+/// each platform declares a concrete wrapper around this.
+pub async fn web_task_body<B: Board>(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppProps<B>>) {
     info!("Starting Web Task...");
 
     let port = 80;
@@ -161,11 +168,11 @@ async fn web_task(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppP
     // radio bus is. 8 KB TX + 4 KB RX per task; with 5 tasks that is 100 KB of
     // the 192 KB heap, and it matches smoltcp's default send window so the
     // socket stays full (see the blog-post numbers in ws.rs on the bus side).
-    let mut tcp_rx_buffer = Vec::new();
+    let mut tcp_rx_buffer = alloc::vec::Vec::new();
     tcp_rx_buffer.resize(4096, 0);
-    let mut tcp_tx_buffer = Vec::new();
+    let mut tcp_tx_buffer = alloc::vec::Vec::new();
     tcp_tx_buffer.resize(8192, 0);
-    let mut http_buffer = Vec::new();
+    let mut http_buffer = alloc::vec::Vec::new();
     http_buffer.resize(8 * 1024, 0);
 
     Box::new(
@@ -180,50 +187,4 @@ async fn web_task(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppP
             .await,
     )
     .into_never()
-}
-
-pub fn start_http(spawner: Spawner, stack: Stack<'static>, app: AppProps) {
-    let app = make_static!(AppRouter<AppProps>, app.build_app());
-
-    for id in 0..WEB_TASK_POOL_SIZE {
-        spawner.spawn(web_task(id, stack, app).unwrap());
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Radio (ESP32-C3 tunnel) serving — no IP stack on the Pico.
-// ---------------------------------------------------------------------------
-
-/// App router pointer for tunnel serving. Stored as an integer because the
-/// router type (via `LocalFs`) is intentionally not `Sync` — a single static
-/// instance shared across connection tasks on one executor.
-#[cfg(feature = "radio")]
-static TUNNEL_APP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
-/// Prepare the app router for tunnel-served connections. Connections arrive
-/// via [`crate::tasks::radio`], which calls [`serve_tunnel`] per stream.
-#[cfg(feature = "radio")]
-pub async fn start_http_radio(app: AppProps) {
-    let app = make_static!(AppRouter<AppProps>, app.build_app());
-    let ptr: *const AppRouter<AppProps> = app;
-    TUNNEL_APP.store(ptr as usize, core::sync::atomic::Ordering::Relaxed);
-}
-
-/// Serve HTTP requests over a single relayed TCP connection from the C3.
-#[cfg(feature = "radio")]
-pub async fn serve_tunnel(
-    socket: TunnelSocket,
-) -> Result<picoserve::DisconnectionInfo<picoserve::NoGracefulShutdown>, picoserve::Error<tunnel::TunnelError>> {
-    let app = {
-        let ptr = TUNNEL_APP.load(core::sync::atomic::Ordering::Relaxed);
-        if ptr == 0 {
-            defmt::panic!("start_http_radio must run before serving");
-        }
-        unsafe { &*(ptr as *const AppRouter<AppProps>) }
-    };
-
-    let mut http_buffer = Vec::new();
-    http_buffer.resize(8 * 1024, 0);
-
-    Server::new(app, &CONFIG, http_buffer.as_mut()).serve(socket).await
 }
