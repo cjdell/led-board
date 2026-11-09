@@ -18,7 +18,7 @@ use crate::{
         info::{GetAnimationsHandler, GetPlaylistHandler},
         ota::OtaUpdateHandler,
         web_socket::WebSocketHandler,
-        wifi::{WifiJoinHandler, WifiScanHandler},
+        wifi::{JoinStatusHandler, WifiJoinHandler, WifiScanHandler},
     },
     types::*,
 };
@@ -100,6 +100,7 @@ impl AppBuilder for AppProps {
                             .post_service(WifiJoinHandler::new(config_file_4))
                             .options(async || cors_options_response()),
                     )
+                    .route("/join-status", get_service(JoinStatusHandler))
                     .nest(
                         "/info",
                         Router::new()
@@ -145,10 +146,16 @@ async fn web_task(id: usize, stack: Stack<'static>, app: &'static AppRouter<AppP
 
     let port = 80;
 
+    // Throughput through these buffers is buffer/RTT-bound: picoserve blocks
+    // whenever a write exceeds the remaining space. 1 KB against Wi-Fi LAN RTTs
+    // (3–15 ms) caps a connection around 0.5–2.5 Mbit/s no matter how fast the
+    // radio bus is. 8 KB TX + 4 KB RX per task; with 5 tasks that is 100 KB of
+    // the 192 KB heap, and it matches smoltcp's default send window so the
+    // socket stays full (see the blog-post numbers in ws.rs on the bus side).
     let mut tcp_rx_buffer = Vec::new();
-    tcp_rx_buffer.resize(1024, 0);
+    tcp_rx_buffer.resize(4096, 0);
     let mut tcp_tx_buffer = Vec::new();
-    tcp_tx_buffer.resize(1024, 0);
+    tcp_tx_buffer.resize(8192, 0);
     let mut http_buffer = Vec::new();
     http_buffer.resize(8 * 1024, 0);
 

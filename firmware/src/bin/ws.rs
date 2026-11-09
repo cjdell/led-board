@@ -10,7 +10,7 @@ use alloc::{boxed::Box, string::ToString as _, sync::Arc, vec::Vec};
 use animations::{
     AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS, apply_power_limit, playlist,
 };
-use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
+use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::{Executor, Spawner};
 use embassy_futures::join::join;
@@ -179,9 +179,14 @@ async fn main(spawner: Spawner) {
     let spi = PioSpi::new(
         &mut pio.common,
         pio.sm0,
-        // SPI communication won't work if the speed is too high, so we use a divider larger than `DEFAULT_CLOCK_DIVIDER`.
-        // See: https://github.com/embassy-rs/embassy/issues/3960.
-        RM2_CLOCK_DIVIDER,
+        // ÷2 → 75 MHz SM clock → 37.5 MHz GSPI (half the SM clock: the PIO programs
+        // spend two SM cycles per SPI bit), inside the CYW43439's 50 MHz spec and an
+        // integer divider. At this speed the program-selection logic (embassy PR
+        // #4792, in our locked checkout) loads the sample-on-clock-low program, the
+        // one that actually moves bulk data above ~25 MHz — the old RM2 workaround
+        // for issue #3960 predates both #4792 and the #6001 RP2350 RX DMA fix and
+        // only got the 25 MHz / sample-on-high tier. See fletcher.cool/blog/pico-2w-wifi-throughput.
+        DEFAULT_CLOCK_DIVIDER,
         pio.irq0,
         cs,
         p.PIN_24,

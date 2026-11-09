@@ -211,9 +211,56 @@ ELF — but GET status does).
 - RP2351 legal UART pins are fixed-function; the authoritative list is the
   `impl_pin!` table in the locked embassy-rp checkout (`uart/mod.rs`).
 
+## Dependency state (Nov 2026 audit)
+
+- **embassy is pinned at `9ae6c57` (2026-07-12) and cannot float to main**:
+  embassy-net has been rewritten onto the new `xarxa` stack (smoltcp-era
+  features like `icmp`/`raw` gone) — blocks the picoserve + edge-net forks and
+  our `StackResources` usage. The October cyw43 robustness fixes (join-cleanup,
+  DIO-low reset, pool sizing) sit behind that line; revisit when the forks
+  catch up. Our pin *does* contain the two perf fixes: #4792 (gSPI PIO program
+  selection) and #6001 (RP2350 RX DMA corruption).
+- **cyw43 gSPI now runs `DEFAULT_CLOCK_DIVIDER`** (÷2 → 75 MHz SM → 37.5 MHz
+  GSPI: the programs cost 2 SM cycles per SPI bit, so GSPI = clk/div/2;
+  in-spec, integer divider → sample-on-low high-speed program). The old
+  `RM2_CLOCK_DIVIDER` (25 MHz GSPI) was a workaround for issue #3960, written
+  before the pin contained #4792/#6001. See fletcher.cool/blog/pico-2w-wifi-throughput.
+- **wifi web tasks use 8 KB TX / 4 KB RX picoserve buffers** (was 1 KB — that
+  was a buffer/RTT cap around 1 Mbit/s regardless of bus speed). Heap is fixed
+  at 192 KB (`embedded_alloc::init!`) — web pool × buffers must fit in it.
+- **The app slot is 508 K (`memory.x`), not 4 MB** — `wifi,defmt_tcp,console`
+  overflows (≈23 KB even after halving that build's heap buffers, which don't
+  change flash anyway; and join-loop logs go through the defmt-TCP logger, so
+  the console would show nothing extra — the diagnostic build is dropped).
+  Wifi builds are `wifi,defmt_tcp` and logs come via
+  `defmt-print ... tcp --port 19021`. `scripts/stress_wifi.sh` captures it and
+  reports per-load throughput with the stress.sh acceptance bar.
+- **Wi-Fi acceptance PASSED (Nov 2026)**: `HOST=http://<ip>/ ./scripts/stress_wifi.sh`
+  → 15/15 identical 73,541 B loads, one sha256 group, 0 curl failures, 0 guard
+  trips. Singles ≈0.16 s (≈3.3–3.7 Mbit/s), 4-bursts ≈0.3–0.5 s (≈1.2–2 Mbit/s)
+  — 7–10× the radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800 UART), so the slave
+  radio is demoted to a provisioning/legacy option, not the throughput path.
+  Burst-load defmt shows `failed to push rxd packet` + `unexpected ethernet
+  type 0x0000` warnings = cyw43 RX pool pressure (the retransmit tail); the
+  October embassy pool fixes address exactly this, still behind the xarxa line.
+- **Wifi builds provision natively again**: the radio rewrite had left
+  `GET/POST /api/wifi` as 503 stubs on non-radio builds ("save wifi → board
+  comes back as AP" was this, not join flakiness). The non-radio branches now
+  scan via cyw43 through the shared `WIFI_CONTROL` static and persist via
+  `add_known_wifi_network` + ROM `reboot` (the join loop reads config once at
+  boot). `GET /api/join-status` reports attempts / last `JoinError` / IP /
+  AP-fallback — read it from a phone browser in AP fallback; a console-less
+  build's only join-forensics channel.
+- **esp-hal stays at tag `esp-hal-v1.1.2`**; v1.2.0 exists (Sep 2026) but the
+  port is a full radio session with the bench online: typed `Ssid`/`Password` +
+  `AuthenticationMethodConfig` configs, `DmaAlignedMut` descriptor buffers,
+  `SoftwareInterruptControl` removed, `esp_radio::wifi::new` renamed,
+  `Interface` lifetime changes. Supervisor-only edits do not compile.
+
 ## Firmware sizes (release, Nov 2026)
 
-Pico wifi ≈ 501 KB, Pico radio ≈ 408 KB (4 MB flash); C3 ≈ 690 KB
+Pico wifi ≈ 476 KB, Pico radio ≈ 451 KB (508 K slot; ~32 K headroom on wifi —
+`wifi,defmt_tcp,console` does **not** fit); C3 ≈ 690 KB
 (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure anywhere.
 
 ## Protocol notes

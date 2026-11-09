@@ -7,8 +7,10 @@ use crate::{
 use alloc::{
     format,
     string::{String, ToString as _},
+    vec::Vec,
 };
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use core::sync::atomic::{AtomicU32, Ordering};
 use cyw43::{Control, JoinOptions, PowerManagementMode, SpiBus, aligned_bytes};
 use cyw43_pio::PioSpi;
 use defmt::*;
@@ -33,6 +35,7 @@ use embassy_rp::{
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
     channel::{Channel, Receiver, Sender},
+    mutex::Mutex,
     rwlock::RwLock,
     signal::Signal,
 };
@@ -43,6 +46,80 @@ use static_cell::StaticCell;
 const RAW_FLASH_BASE: u32 = 0x1c000000; // See XIP_NOCACHE_NOALLOC_NOTRANSLATE_BASE
 const WIFI_FIRMWARE_FLASH_OFFSET: u32 = 0x00200000;
 const WIFI_FIRMWARE_LENGTH: usize = 231077; // Size of `firmware/blobs/43439A0.bin`
+
+/// `Control` is `!Sync` (Cell/RefCell internals), but the only access path is
+/// through the inner `RwLock`'s guard, and `CriticalSectionRawMutex` is a real
+/// cross-core critical section on the RP2351 — simultaneous access is
+/// impossible, which is exactly what `Sync` promises. (Same discipline
+/// `StaticCell` applies to `cyw43::State` in `init_wifi`.)
+struct Shared<T>(T);
+// SAFETY: see above — all access is serialized by the inner lock.
+unsafe impl<T> Sync for Shared<T> {}
+
+/// Shared cyw43 handle so the provisioning endpoints (`/api/wifi` scan) can use
+/// the radio without a C3 relay. `wifi_task` parks it here while idle and
+/// borrows it for each join attempt, so contention is a scan racing a join —
+/// which the provisioning flow (AP fallback, nobody joining) never creates.
+pub static WIFI_CONTROL: Shared<RwLock<CriticalSectionRawMutex, Option<Control<'static>>>> =
+    Shared(RwLock::new(None));
+
+/// Native scan for the wifi build's `/api/wifi`: dedupe by SSID (strongest
+/// signal wins), sorted by RSSI, capped to keep the JSON inside the web-task
+/// TX buffer. `None` if the radio never initialized.
+pub async fn wifi_scan() -> Option<Vec<(String, i8, bool)>> {
+    let mut guard = WIFI_CONTROL.0.write().await;
+    let control = guard.as_mut()?;
+
+    let mut rows: Vec<(String, i8, bool)> = Vec::new();
+    let mut scanner = control.scan(cyw43::ScanOptions::default()).await;
+    while let Some(bss) = scanner.next().await {
+        let len = (bss.ssid_len as usize).min(bss.ssid.len());
+        let ssid = String::from_utf8_lossy(&bss.ssid[..len]).into_owned();
+        if ssid.is_empty() {
+            continue;
+        }
+        let rssi = bss.rssi.clamp(i16::from(i8::MIN), i16::from(i8::MAX)) as i8;
+        let password_required = bss.capability & 0x0010 != 0;
+        match rows.iter_mut().find(|r| r.0 == ssid) {
+            Some(existing) => existing.1 = existing.1.max(rssi),
+            None => rows.push((ssid, rssi, password_required)),
+        }
+    }
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.truncate(12);
+    Some(rows)
+}
+
+/// What the last join attempt did, exposed via `GET /api/join-status`.
+/// Provisioning from a phone is a blind window — there is no host-side log
+/// until the board is on the LAN — so the board must report its own failure.
+#[derive(Default)]
+struct JoinStatus {
+    last_error: Option<String>,
+    joined_ssid: Option<String>,
+    ip: Option<String>,
+    ap_fallback: bool,
+}
+
+static JOIN_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+static JOIN_STATUS: Mutex<CriticalSectionRawMutex, JoinStatus> = Mutex::new(JoinStatus {
+    last_error: None,
+    joined_ssid: None,
+    ip: None,
+    ap_fallback: false,
+});
+
+pub async fn join_status_json() -> String {
+    let status = JOIN_STATUS.lock().await;
+    serde_json::json!({
+        "attempts": JOIN_ATTEMPTS.load(Ordering::Relaxed),
+        "last_error": status.last_error.clone(),
+        "joined_ssid": status.joined_ssid.clone(),
+        "ip": status.ip.clone(),
+        "ap_fallback": status.ap_fallback,
+    })
+    .to_string()
+}
 
 pub async fn init_wifi(
     spawner: Spawner,
@@ -159,7 +236,9 @@ pub async fn wifi_task(
     let join_timeout = Duration::from_secs(10);
     let dhcp_timeout = Duration::from_secs(10);
 
-    let control: RwLock<CriticalSectionRawMutex, cyw43::Control<'_>> = RwLock::new(control);
+    // Park the handle in the shared static; every use below borrows it from
+    // there so the http provisioning handlers can reach it too.
+    *WIFI_CONTROL.0.write().await = Some(control);
 
     let sender = signal.sender();
 
@@ -181,7 +260,8 @@ pub async fn wifi_task(
                         loop {
                             watchdog.write().await.feed(Duration::from_secs(15));
 
-                            let mut control = control.write().await;
+                            let mut control_guard = WIFI_CONTROL.0.write().await;
+                            let control = control_guard.as_mut().unwrap();
 
                             match control
                                 .join(&network.ssid, JoinOptions::new(network.pass.as_bytes()))
@@ -189,11 +269,17 @@ pub async fn wifi_task(
                             {
                                 Ok(()) => {
                                     info!("Joined WiFi network: {}", network.ssid.as_str());
+                                    let mut status = JOIN_STATUS.lock().await;
+                                    status.joined_ssid = Some(network.ssid.clone());
+                                    status.last_error = None;
+                                    drop(status);
                                     joined = true;
                                     break;
                                 }
                                 Err(e) => {
+                                    JOIN_STATUS.lock().await.last_error = Some(format!("{e:?}"));
                                     if start.elapsed() > join_timeout {
+                                        JOIN_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
                                         error!("Failed to join WiFi after {} seconds: {:?}", join_timeout.as_secs(), e);
                                         break;
                                     }
@@ -214,12 +300,14 @@ pub async fn wifi_task(
                             Some(cfg) => cfg,
                             None => {
                                 error!("DHCP timeout. No IP address assigned.");
+                                JOIN_STATUS.lock().await.last_error = Some("DHCP timeout".to_string());
                                 continue;
                             }
                         };
 
                         let ip = cfg.address.address();
                         info!("Connected! IP Address: {}", ip);
+                        JOIN_STATUS.lock().await.ip = Some(format!("{}", ip));
                         sender.send(EthernetSignalMessage::Connected(ip));
 
                         has_connected_once = true;
@@ -257,10 +345,13 @@ pub async fn wifi_task(
             watchdog.write().await.feed(Duration::from_secs(15));
 
             {
-                let mut control = control.write().await;
+                let mut control_guard = WIFI_CONTROL.0.write().await;
+                let control = control_guard.as_mut().unwrap();
 
                 control.start_ap_open("LED Board", 5).await;
             }
+
+            JOIN_STATUS.lock().await.ap_fallback = true;
 
             let ip_address = embassy_net::Ipv4Address::new(192, 168, 1, 1);
 
@@ -281,7 +372,8 @@ pub async fn wifi_task(
         async {
             loop {
                 let state = receiver.receive().await;
-                let mut control = control.write().await;
+                let mut control_guard = WIFI_CONTROL.0.write().await;
+                let control = control_guard.as_mut().unwrap();
                 control.gpio_set(0, state).await;
             }
         },

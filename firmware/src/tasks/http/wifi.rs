@@ -85,13 +85,23 @@ impl RequestHandlerService<()> for WifiScanHandler {
 
         #[cfg(not(feature = "radio"))]
         {
-            let _ = &self.config_file;
-            error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "wifi scanning requires the radio build",
-            )
-            .write_to(req.body_connection.finalize().await?, writer)
-            .await
+            // wifi build: the cyw43 itself answers (no C3 to relay through).
+            let Some(found) = crate::tasks::wifi::wifi_scan().await else {
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "wifi control not ready")
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await;
+            };
+
+            let rows: alloc::vec::Vec<ScanRow> = found
+                .into_iter()
+                .map(|(ssid, signal_strength, password_required)| ScanRow {
+                    ssid,
+                    signal_strength,
+                    password_required,
+                })
+                .collect();
+
+            json_response!(req, writer, scan_json(&rows).as_str())
         }
     }
 }
@@ -101,6 +111,23 @@ pub struct JoinRequest {
     pub ssid: String,
     #[serde(default)]
     pub pass: String,
+}
+
+/// `GET /api/join-status` — the wifi join loop's self-report. Readable from a
+/// phone browser while the board sits in AP fallback, where there is no other
+/// way to see *why* it refused to come up on the LAN.
+pub struct JoinStatusHandler;
+
+impl RequestHandlerService<()> for JoinStatusHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        json_response!(req, writer, crate::tasks::wifi::join_status_json().await.as_str())
+    }
 }
 
 pub struct WifiJoinHandler {
@@ -123,10 +150,40 @@ impl RequestHandlerService<()> for WifiJoinHandler {
     ) -> Result<ResponseSent, W::Error> {
         #[cfg(not(feature = "radio"))]
         {
-            let _ = (&self.config_file, &mut req);
-            error_response(StatusCode::SERVICE_UNAVAILABLE, "wifi joining requires the radio build")
-                .write_to(req.body_connection.finalize().await?, writer)
+            // wifi build: persist to the Pico's own config, then reboot — the
+            // join loop reads config once at boot and there is no C3 to poke.
+            let buffer = read_request_to_buffer!(req, writer);
+
+            let Ok(join) = serde_json::from_slice::<JoinRequest>(&buffer) else {
+                return error_response(StatusCode::BAD_REQUEST, "expected {ssid, pass}")
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await;
+            };
+
+            if let Err(err) = self
+                .config_file
+                .add_known_wifi_network(join.ssid.clone(), join.pass.clone())
                 .await
+            {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &alloc::format!("{err:?}"))
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await;
+            }
+
+            let body = serde_json::json!({
+                "joined": false,
+                "rebooting": true,
+                "ssid": join.ssid.clone(),
+                "mode": "Station",
+            })
+            .to_string();
+
+            json_response!(req, writer, body.as_str())?;
+
+            // Give the response a moment to flush before the ROM reset.
+            embassy_time::Timer::after_millis(1_500).await;
+            embassy_rp::rom_data::reboot(0, 10, 0, 0);
+            unreachable!();
         }
 
         #[cfg(feature = "radio")]
