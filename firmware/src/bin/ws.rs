@@ -463,6 +463,7 @@ async fn main(spawner: Spawner) {
                 const REBOOT_TYPE_BOOTSEL: u32 = 0x0002;
                 const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x0100;
 
+                rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
                 rom_data::reboot(REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 10, 0, 0);
             }
 
@@ -521,6 +522,13 @@ async fn watchdog_runner(watchdog: SharedWatchdog) {
 
     loop {
         Timer::after(delay).await;
+
+        // Never feed while a ROM reboot is pending: `reboot()` arms the
+        // watchdog as its reset mechanism, so feeding here silently cancels
+        // every OTA/bootsel reboot (the board just keeps running old code).
+        if rp235x_ota::REBOOTING.load(core::sync::atomic::Ordering::SeqCst) {
+            continue;
+        }
 
         if let Ok(mut watchdog) = watchdog.try_write() {
             watchdog.feed(Duration::from_millis(15_000));

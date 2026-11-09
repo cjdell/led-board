@@ -157,6 +157,22 @@ picotool reboot -a -f            # no vid flags needed for RP2350 Boot (2E8A:000
 
 OTA over the network: `just ota` (builds, then `curl POST /api/ota`).
 
+**OTA reboot traps (datasheet 5.4.8.24 / RP2350, verified on the bench):**
+`rom_data::reboot()` is *asynchronous* — it arms the **watchdog** and returns;
+the boot path reads `p0`/`p1` from watchdog scratch registers after the reset.
+Consequences, both of which silently left the board running the old image:
+1. Any task that keeps feeding the watchdog (`watchdog_runner`, every 5 s)
+   reloads the counter and **cancels the pending reboot**. Reboot paths set
+   `rp235x_ota::REBOOTING`; feeders must skip feeding while it is set.
+2. For `REBOOT_TYPE_FLASH_UPDATE` (0x4), `p0` is *the start address of the
+   updated flash region*, and only a match with a partition/slot start makes
+   the ROM prefer it. `Partition::get_first_last_bytes()` already returns an
+   XIP address — adding `FLASH_BASE` again (0x10000000 + 0x10001000 =
+   0x20001000) matched nothing.
+Working signature: `reboot(0x4 | 0x100, 1000, partition_start_addr, 0)`; the
+reset shows as `Reset Reason: Some(TimedOut)` followed by
+`Rp235xOta: Marking this firmware as good...`.
+
 Keep `tmp/ws.elf` (copy of the release ELF) for `probe-rs attach`/`defmt-print`.
 
 ## Flashing — ESP32-C6 / C3 (`slave_radio/`)

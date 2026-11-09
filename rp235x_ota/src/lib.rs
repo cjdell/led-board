@@ -13,6 +13,13 @@ use embassy_rp::rom_data;
 use sha2::{Digest, Sha256};
 
 const REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE: u32 = 0x4;
+
+/// Set while a ROM reboot is pending. `reboot()` arms the watchdog and
+/// returns (it is asynchronous unless NO_RETURN_ON_SUCCESS sticks), so any
+/// task that keeps feeding the watchdog — our 5 s watchdog_runner does —
+/// reloads the counter and cancels the reset, leaving the board happily
+/// running the old image. Reboot paths set this and feeders must honour it.
+pub static REBOOTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Without this the ROM reboot2 call can return on success, leaving the OTA
 /// image verified-but-never-booted: the board keeps running the old image and
 /// the whole upload looks like a no-op.
@@ -237,10 +244,19 @@ where
 
             // self.watchdog.try_write().unwrap().stop();
 
+            REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
+
+            // Datasheet 5.4.8.24 (reboot): for REBOOT_TYPE_FLASH_UPDATE, p0 is
+            // "the address of the start of the region of flash that was
+            // updated. If this address matches the start address of a
+            // partition or slot, then that partition or slot is treated
+            // preferentially during boot". `start_addr` is already an XIP
+            // address, so adding FLASH_BASE again (0x10000000 + 0x10001000 =
+            // 0x20001000) matched nothing and the ROM booted the old slot.
             rom_data::reboot(
                 REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
                 1_000,
-                FLASH_BASE + self.start_addr,
+                self.start_addr,
                 0,
             );
 

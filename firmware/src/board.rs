@@ -106,6 +106,8 @@ impl Board for RadioBoard {
     type Ota = RpOtaBackend;
 
     fn reboot(&self) -> impl core::future::Future<Output = ()> {
+        // Stop the watchdog feeder re-arming the ROM's asynchronous reboot.
+        rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
         rom_data::reboot(0, 10, 0, 0);
         core::future::ready(())
     }
@@ -186,6 +188,8 @@ impl Board for DirectBoard {
     type Ota = RpOtaBackend;
 
     fn reboot(&self) -> impl core::future::Future<Output = ()> {
+        // Stop the watchdog feeder re-arming the ROM's asynchronous reboot.
+        rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
         rom_data::reboot(0, 10, 0, 0);
         core::future::ready(())
     }
