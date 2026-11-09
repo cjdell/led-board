@@ -43,10 +43,16 @@ impl Playlist {
         ]
     }
 
-    /// Leigh Lights parade loop (Nov 2026): four lantern sections, each led by
-    /// a gold title card, framed by the "Light Up Leigh" scroll. One loop ≈ 4
-    /// minutes. Hardcoded so the board boots straight into it with no playlist
-    /// file on flash (delete `playlist_default.json` / "Reset" to reach it).
+    /// Leigh Lights parade loop (Nov 2026): festival animations ONLY — the
+    /// legacy effects (Fireworks, Rainbows, SynthWave, SilentDancer,
+    /// SpinningCube, Circles, EchoOfTheSoul) are deliberately absent from the
+    /// startup loop so the board opens on the parade programme. The old
+    /// effects remain available in `/api/info/animations` for manual use.
+    ///
+    /// Four lantern sections, each led by a gold title card, framed by the
+    /// "Light Up Leigh" scroll. One loop ≈ 230 s. Hardcoded so the board boots
+    /// straight into it with no playlist file on flash (delete
+    /// `playlist_default.json` / "Reset" to reach it).
     pub fn get_default_playlist_data() -> Vec<(AnimationEnum, u32)> {
         vec![
             // ── Banner ────────────────────────────────────────────────────
@@ -54,40 +60,35 @@ impl Playlist {
                 AnimationEnum::ScrollingMessage("Light Up Leigh with Leigh Hackspace".to_string()),
                 14_000,
             ),
-            // ── Section 1: Natures Magic (robins, leaves, owls, deer) ─────
+            // ── Section 1: Natures Magic ─────────────────────────────────
             (
                 AnimationEnum::CenteredTitle("Natures".to_string(), "Magic".to_string()),
                 5_000,
             ),
-            (AnimationEnum::FallingLeaves, 15_000),
-            (AnimationEnum::Fireflies, 16_000),
-            (AnimationEnum::EchoOfTheSoul, 12_000),
-            // ── Section 2: Awe and Wonder (stars, snow, frost fairies) ────
+            (AnimationEnum::FallingLeaves, 18_000),
+            (AnimationEnum::Fireflies, 20_000),
+            // ── Section 2: Awe and Wonder ────────────────────────────────
             (
                 AnimationEnum::CenteredTitle("Awe and".to_string(), "Wonder".to_string()),
                 5_000,
             ),
-            (AnimationEnum::Starfield, 14_000),
-            (AnimationEnum::Snowfall, 16_000),
-            (AnimationEnum::Fireworks, 12_000),
-            (AnimationEnum::Rainbows, 12_000),
-            // ── Section 3: Northern Lights (aurora, music, running) ───────
+            (AnimationEnum::Starfield, 18_000),
+            (AnimationEnum::Snowfall, 20_000),
+            // ── Section 3: Northern Lights ───────────────────────────────
             (
                 AnimationEnum::CenteredTitle("Northern".to_string(), "Lights".to_string()),
                 5_000,
             ),
-            (AnimationEnum::Aurora, 20_000),
-            (AnimationEnum::VinylSpin, 12_000),
-            (AnimationEnum::SynthWave, 12_000),
-            (AnimationEnum::SilentDancer, 12_000),
-            // ── Section 4: Heritage in Motion (canal, circus, mills) ──────
+            (AnimationEnum::Aurora, 30_000),
+            (AnimationEnum::Starfield, 14_000),
+            (AnimationEnum::VinylSpin, 16_000),
+            // ── Section 4: Heritage in Motion ────────────────────────────
             (
                 AnimationEnum::CenteredTitle("Heritage".to_string(), "in Motion".to_string()),
                 5_000,
             ),
-            (AnimationEnum::CanalBoats, 16_000),
-            (AnimationEnum::SpinningCube, 12_000),
-            (AnimationEnum::Circles, 12_000),
+            (AnimationEnum::CanalBoats, 24_000),
+            (AnimationEnum::Fireflies, 16_000),
             // ── Close ─────────────────────────────────────────────────────
             (
                 AnimationEnum::CenteredTitle("Leigh".to_string(), "Hackspace".to_string()),
