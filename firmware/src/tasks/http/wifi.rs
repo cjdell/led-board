@@ -1,10 +1,23 @@
-//! `GET/POST /api/wifi` — WiFi scan + connect, backed by the ESP32-C3 slave
-//! radio when the `radio` feature is enabled.
+//! WiFi provisioning API — scan, join, saved networks, and join forensics.
 //!
-//! The response shapes match the web app's `WifiResultSchema`, so the existing
-//! `/wifi` provisioning UI works against either backend.
+//! Built-in WiFi (cyw43) is the primary backend: the scan runs on the Pico's
+//! own radio and a join persists to the config file, then reboots into the
+//! join loop (`wifi_task` reads config once at boot). The `radio` feature
+//! keeps the ESP32-C3 relay paths working (scan/join go over the link, saved
+//! networks stay authoritative on the Pico).
+//!
+//! Endpoint set (all JSON):
+//! * `GET  /api/wifi`        — scan results `[{ssid, signal_strength, password_required}]`
+//! * `POST /api/wifi`        — `{ssid, pass}`: persist + connect (reboots on wifi builds)
+//! * `GET  /api/networks`    — `{networks: [{ssid}], mode}` — SSIDs only, never passwords
+//! * `POST /api/forget`      — `{ssid}`: drop a saved network (takes effect next boot)
+//! * `GET  /api/join-status` — join-loop self-report for the web UI's status card
+//!
+//! The response shapes match the web app's schemas in `web/src/lib/device`.
 
+use alloc::format;
 use alloc::string::{String, ToString as _};
+use alloc::vec::Vec;
 use embedded_tools::config::ConfigFileTrait as _;
 use picoserve::{
     ResponseSent,
@@ -37,13 +50,11 @@ fn error_response(code: StatusCode, message: &str) -> impl IntoResponse + use<'_
     ])
 }
 
-pub struct WifiScanHandler {
-    config_file: LedBoardConfigFile,
-}
+pub struct WifiScanHandler;
 
 impl WifiScanHandler {
-    pub fn new(config_file: LedBoardConfigFile) -> Self {
-        Self { config_file }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -111,6 +122,96 @@ pub struct JoinRequest {
     pub ssid: String,
     #[serde(default)]
     pub pass: String,
+}
+
+/// `GET /api/networks` — the saved WiFi networks (SSIDs only, never
+/// passwords), so the web UI can show "Saved"/"Current" badges and offer
+/// Forget without round-tripping the whole device config.
+pub struct WifiNetworksHandler {
+    config_file: LedBoardConfigFile,
+}
+
+impl WifiNetworksHandler {
+    pub fn new(config_file: LedBoardConfigFile) -> Self {
+        Self { config_file }
+    }
+}
+
+impl RequestHandlerService<()> for WifiNetworksHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let data = self.config_file.get_data().await;
+
+        let rows: Vec<_> = data
+            .known_wifi_networks
+            .iter()
+            .map(|n| serde_json::json!({ "ssid": n.ssid }))
+            .collect();
+
+        let body = serde_json::json!({
+            "networks": rows,
+            "mode": format!("{:?}", data.wifi_mode),
+        })
+        .to_string();
+
+        json_response!(req, writer, body.as_str())
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ForgetRequest {
+    pub ssid: String,
+}
+
+/// `POST /api/forget` — drop a saved network. Takes effect on the next boot
+/// (the join loop reads config once at startup); the current connection, if
+/// any, is left alone.
+pub struct WifiForgetHandler {
+    config_file: LedBoardConfigFile,
+}
+
+impl WifiForgetHandler {
+    pub fn new(config_file: LedBoardConfigFile) -> Self {
+        Self { config_file }
+    }
+}
+
+impl RequestHandlerService<()> for WifiForgetHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        mut req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let buffer = read_request_to_buffer!(req, writer);
+
+        let Ok(forget) = serde_json::from_slice::<ForgetRequest>(&buffer) else {
+            return error_response(StatusCode::BAD_REQUEST, "expected {ssid}")
+                .write_to(req.body_connection.finalize().await?, writer)
+                .await;
+        };
+
+        match self.config_file.remove_known_wifi_network(forget.ssid).await {
+            Ok(removed) => {
+                #[cfg(feature = "radio")]
+                crate::tasks::radio::sync_config(self.config_file.clone()).await;
+
+                let body = serde_json::json!({ "ok": true, "removed": removed }).to_string();
+                json_response!(req, writer, body.as_str())
+            }
+            Err(err) => {
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{err:?}"))
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await
+            }
+        }
+    }
 }
 
 /// `GET /api/join-status` — the wifi join loop's self-report. Readable from a

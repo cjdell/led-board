@@ -39,11 +39,18 @@ pub struct KnownWifiNetwork {
 
 pub trait LedBoardConfigurator {
     fn add_known_wifi_network(&self, ssid: String, pass: String) -> impl Future<Output = Result<(), StateError>>;
+    fn remove_known_wifi_network(&self, ssid: String) -> impl Future<Output = Result<bool, StateError>>;
 }
 
 impl LedBoardConfigurator for LedBoardConfigFile {
     async fn add_known_wifi_network(&self, ssid: String, pass: String) -> Result<(), StateError> {
         let mut data = self.get_data().await;
+
+        // Remembering a network always implies "join it as a station" — the
+        // provisioning UI relies on this to pull an AccessPoint-mode board
+        // back into Station mode on the next boot.
+        data.wifi_mode = WifiMode::Station;
+
         let mut found = false;
 
         for known_wifi_network in &mut data.known_wifi_networks {
@@ -65,5 +72,20 @@ impl LedBoardConfigurator for LedBoardConfigFile {
         self.save().await?;
 
         Ok(())
+    }
+
+    async fn remove_known_wifi_network(&self, ssid: String) -> Result<bool, StateError> {
+        let mut data = self.get_data().await;
+        let before = data.known_wifi_networks.len();
+
+        data.known_wifi_networks.retain(|n| n.ssid != ssid);
+
+        let removed = data.known_wifi_networks.len() != before;
+
+        self.set_data(data).await;
+
+        self.save().await?;
+
+        Ok(removed)
     }
 }

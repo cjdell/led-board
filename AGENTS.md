@@ -243,14 +243,17 @@ ELF — but GET status does).
   Burst-load defmt shows `failed to push rxd packet` + `unexpected ethernet
   type 0x0000` warnings = cyw43 RX pool pressure (the retransmit tail); the
   October embassy pool fixes address exactly this, still behind the xarxa line.
-- **Wifi builds provision natively again**: the radio rewrite had left
-  `GET/POST /api/wifi` as 503 stubs on non-radio builds ("save wifi → board
-  comes back as AP" was this, not join flakiness). The non-radio branches now
-  scan via cyw43 through the shared `WIFI_CONTROL` static and persist via
-  `add_known_wifi_network` + ROM `reboot` (the join loop reads config once at
-  boot). `GET /api/join-status` reports attempts / last `JoinError` / IP /
-  AP-fallback — read it from a phone browser in AP fallback; a console-less
-  build's only join-forensics channel.
+- **Wifi builds provision natively + web UI reworked (Nov 2026)**: the SPA's
+  `/wifi` route is enabled (nav tab "WiFi"): auto-scan on open, signal bars,
+  inline password entry, manual-SSID fallback, saved-network list with
+  Forget, and a status card polling `/api/join-status` every 4 s (attempts,
+  last `JoinError`, IP, AP-fallback) — readable from a phone browser in AP
+  fallback, the only join-forensics channel without a console. Backend:
+  `GET /api/wifi` (cyw43 scan), `POST /api/wifi` (persist + reboot into the
+  join loop), `GET /api/networks` (SSIDs only), `POST /api/forget`, all in
+  `firmware/src/tasks/http/wifi.rs`. `add_known_wifi_network` always sets
+  `wifi_mode: Station` (pulls an AP-mode board back to joining on reboot).
+  Forget takes effect next boot — the join loop reads config once at boot.
 - **esp-hal stays at tag `esp-hal-v1.1.2`**; v1.2.0 exists (Sep 2026) but the
   port is a full radio session with the bench online: typed `Ssid`/`Password` +
   `AuthenticationMethodConfig` configs, `DmaAlignedMut` descriptor buffers,
@@ -259,7 +262,7 @@ ELF — but GET status does).
 
 ## Firmware sizes (release, Nov 2026)
 
-Pico wifi ≈ 476 KB, Pico radio ≈ 451 KB (508 K slot; ~32 K headroom on wifi —
+Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (508 K slot; ~36 K headroom on wifi —
 `wifi,defmt_tcp,console` does **not** fit); C3 ≈ 690 KB
 (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure anywhere.
 

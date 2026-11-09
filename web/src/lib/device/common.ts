@@ -38,6 +38,38 @@ export const WifiResultSchema = v.object({
 
 export type WifiResult = v.InferInput<typeof WifiResultSchema>;
 
+export const WifiNetworkSchema = v.object({
+  ssid: v.string(),
+});
+
+export type WifiNetwork = v.InferOutput<typeof WifiNetworkSchema>;
+
+export const WifiNetworksResultSchema = v.object({
+  networks: v.array(WifiNetworkSchema),
+  mode: v.optional(v.string()),
+});
+
+export type WifiNetworksResult = v.InferOutput<typeof WifiNetworksResultSchema>;
+
+export const WifiJoinResultSchema = v.object({
+  joined: v.optional(v.boolean()),
+  rebooting: v.optional(v.boolean()),
+  ssid: v.optional(v.string()),
+  mode: v.optional(v.string()),
+});
+
+export type WifiJoinResult = v.InferOutput<typeof WifiJoinResultSchema>;
+
+export const WifiJoinStatusSchema = v.object({
+  attempts: v.optional(v.number()),
+  last_error: v.optional(v.nullable(v.string())),
+  joined_ssid: v.optional(v.nullable(v.string())),
+  ip: v.optional(v.nullable(v.string())),
+  ap_fallback: v.optional(v.boolean()),
+});
+
+export type WifiJoinStatus = v.InferOutput<typeof WifiJoinStatusSchema>;
+
 export const PrimitiveSchema = v.union([v.string(), v.number(), v.boolean()]);
 
 export type Primitive = v.InferInput<typeof PrimitiveSchema>;
@@ -84,6 +116,10 @@ export interface DeviceApi {
   reboot(): Promise<void>;
 
   scanWifiNetworks(): Promise<readonly WifiResult[]>;
+  joinWifiNetwork(ssid: string, pass: string): Promise<WifiJoinResult>;
+  getWifiNetworks(): Promise<WifiNetworksResult>;
+  forgetWifiNetwork(ssid: string): Promise<void>;
+  getWifiJoinStatus(): Promise<WifiJoinStatus>;
 
   getAnimationList(): Promise<Animation[]>;
   getPlaylist(): Promise<Playlist>;

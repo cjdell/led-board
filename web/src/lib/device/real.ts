@@ -1,4 +1,4 @@
-import { sleep, WifiResultSchema } from "@lib";
+import { sleep } from "@lib";
 import * as v from "valibot";
 import {
   Animation,
@@ -11,7 +11,14 @@ import {
   FrameBufferListener,
   Playlist,
   PlaylistSchema,
+  WifiJoinResult,
+  WifiJoinResultSchema,
+  WifiJoinStatus,
+  WifiJoinStatusSchema,
+  WifiNetworksResult,
+  WifiNetworksResultSchema,
   WifiResult,
+  WifiResultSchema,
 } from "./common.ts";
 
 export class RealDeviceApi implements DeviceApi {
@@ -88,6 +95,45 @@ export class RealDeviceApi implements DeviceApi {
     return v.parse(v.array(WifiResultSchema), await res.json());
   }
 
+  public async joinWifiNetwork(ssid: string, pass: string): Promise<WifiJoinResult> {
+    const res = await fetch(`${this.baseUrl}wifi`, {
+      method: "POST",
+      headers: [["Content-Type", "application/json"]],
+      body: JSON.stringify({ ssid, pass }),
+    });
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+    return v.parse(WifiJoinResultSchema, await res.json().catch(() => ({})));
+  }
+
+  public async getWifiNetworks(): Promise<WifiNetworksResult> {
+    const res = await fetch(`${this.baseUrl}networks`);
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+    return v.parse(WifiNetworksResultSchema, await res.json());
+  }
+
+  public async forgetWifiNetwork(ssid: string): Promise<void> {
+    const res = await fetch(`${this.baseUrl}forget`, {
+      method: "POST",
+      headers: [["Content-Type", "application/json"]],
+      body: JSON.stringify({ ssid }),
+    });
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+  }
+
+  public async getWifiJoinStatus(): Promise<WifiJoinStatus> {
+    const res = await fetch(`${this.baseUrl}join-status`);
+    if (res.status !== 200) {
+      throw new Error(await res.text());
+    }
+    return v.parse(WifiJoinStatusSchema, await res.json());
+  }
+
   public async sendMessage(message: DeviceMessage) {
     while (this.ws?.readyState !== WebSocket.OPEN) {
       await sleep(1000);
@@ -97,7 +143,7 @@ export class RealDeviceApi implements DeviceApi {
     this.ws.send(JSON.stringify(message));
   }
 
-  public async sendBinary(buffer: Uint8Array) {
+  public async sendBinary(buffer: Uint8Array<ArrayBuffer>) {
     while (this.ws?.readyState !== WebSocket.OPEN) {
       await sleep(1000);
       console.warn("Waiting for WebSocket...", this.ws);

@@ -24,10 +24,10 @@ export function IndexRoute() {
       <h2>Welcome to LED Board!</h2>
 
       <Show when={error()}>
-        {(error) => <p>{error()}</p>}
+        {(error) => <p class="text-danger">{error()}</p>}
       </Show>
 
-      <Show when={deviceConfig()} fallback="Loading...">
+      <Show when={deviceConfig()} fallback={<p>Loading…</p>}>
         {(deviceConfig) => (
           <p>
             This LED Board is called <strong>{deviceConfig().ap_ssid}</strong>
@@ -36,7 +36,10 @@ export function IndexRoute() {
       </Show>
 
       <p>
-        <a href="/wifi">Click here to join a WiFi network</a>
+        <a href="/wifi">Set up WiFi</a> — scan for networks, connect, and manage saved networks.
+      </p>
+      <p>
+        <a href="/remote">Remote</a> — drive the animations from here.
       </p>
     </div>
   );

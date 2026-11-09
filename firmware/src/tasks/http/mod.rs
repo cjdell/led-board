@@ -18,7 +18,7 @@ use crate::{
         info::{GetAnimationsHandler, GetPlaylistHandler},
         ota::OtaUpdateHandler,
         web_socket::WebSocketHandler,
-        wifi::{JoinStatusHandler, WifiJoinHandler, WifiScanHandler},
+        wifi::{JoinStatusHandler, WifiForgetHandler, WifiJoinHandler, WifiNetworksHandler, WifiScanHandler},
     },
     types::*,
 };
@@ -66,25 +66,24 @@ impl AppBuilder for AppProps {
     type PathRouter = impl PathRouter;
 
     fn build_app(self) -> Router<Self::PathRouter> {
-        let config_file_1 = self.config_file.clone();
-        let config_file_2 = self.config_file.clone();
-        let config_file_3 = self.config_file.clone();
-        let config_file_4 = self.config_file.clone();
-
-        let local_fs_1 = self.local_fs.clone();
+        // These handles are cheap `Arc`-backed shared state: move one in and
+        // clone at each registration point instead of numbered copies.
+        let config_file = self.config_file;
+        let local_fs = self.local_fs;
 
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
             .route("/remote", get(async |_: RequestInfo| html_app_response()))
             .route("/grid", get(async |_: RequestInfo| html_app_response()))
             .route("/config", get(async |_: RequestInfo| html_app_response()))
+            .route("/wifi", get(async |_: RequestInfo| html_app_response()))
             .nest(
                 "/api",
                 Router::new()
                     .route(
                         "/config",
-                        get_service(GetConfigHandler::new(config_file_1))
-                            .post_service(SaveConfigHandler::new(config_file_2)),
+                        get_service(GetConfigHandler::new(config_file.clone()))
+                            .post_service(SaveConfigHandler::new(config_file.clone())),
                     )
                     .route(
                         "/reboot",
@@ -96,8 +95,18 @@ impl AppBuilder for AppProps {
                     )
                     .route(
                         "/wifi",
-                        get_service(WifiScanHandler::new(config_file_3))
-                            .post_service(WifiJoinHandler::new(config_file_4))
+                        get_service(WifiScanHandler::new())
+                            .post_service(WifiJoinHandler::new(config_file.clone()))
+                            .options(async || cors_options_response()),
+                    )
+                    .route(
+                        "/networks",
+                        get_service(WifiNetworksHandler::new(config_file.clone()))
+                            .options(async || cors_options_response()),
+                    )
+                    .route(
+                        "/forget",
+                        post_service(WifiForgetHandler::new(config_file.clone()))
                             .options(async || cors_options_response()),
                     )
                     .route("/join-status", get_service(JoinStatusHandler))
@@ -105,7 +114,7 @@ impl AppBuilder for AppProps {
                         "/info",
                         Router::new()
                             .route("/animations", get_service(GetAnimationsHandler::new()))
-                            .route("/playlist", get_service(GetPlaylistHandler::new(local_fs_1))),
+                            .route("/playlist", get_service(GetPlaylistHandler::new(local_fs.clone()))),
                     )
                     .route(
                         "/ws",

@@ -18,6 +18,11 @@ const Routes: readonly RouteDefinition[] = [
     component: IndexRoute,
   },
   {
+    label: "WiFi",
+    path: "/wifi",
+    component: WifiRoute,
+  },
+  {
     label: "Remote",
     path: "/remote",
     component: RemoteRoute,
@@ -37,11 +42,6 @@ const Routes: readonly RouteDefinition[] = [
     path: "/config",
     component: ConfigRoute,
   },
-  // {
-  //   label: "WiFi",
-  //   path: "/wifi",
-  //   component: WifiRoute,
-  // },
 ];
 
 export function App() {

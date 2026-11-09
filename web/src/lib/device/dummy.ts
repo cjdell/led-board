@@ -9,11 +9,17 @@ import {
   DeviceMessage,
   FrameBufferListener,
   Playlist,
+  WifiJoinResult,
+  WifiJoinStatus,
+  WifiNetworksResult,
   WifiResult,
 } from "./common.ts";
 
 export class DummyDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
+
+  private networks: { ssid: string; pass: string }[] = [{ ssid: "cccc", pass: "dddd" }];
+  private joinStatus: WifiJoinStatus = { attempts: 0, last_error: null, joined_ssid: "cccc", ip: "192.168.0.50", ap_fallback: false };
 
   public onFrameBuffer(handler: FrameBufferListener) {
     //
@@ -23,10 +29,7 @@ export class DummyDeviceApi implements DeviceApi {
     return {
       wifi_mode: "AccessPoint",
       ap_ssid: "aaaa",
-      known_wifi_networks: [{
-        ssid: "cccc",
-        pass: "dddd",
-      }],
+      known_wifi_networks: [...this.networks],
     };
   }
 
@@ -55,7 +58,32 @@ export class DummyDeviceApi implements DeviceApi {
         signal_strength: -70,
         password_required: false,
       },
+      {
+        ssid: "cccc",
+        signal_strength: -55,
+        password_required: true,
+      },
     ];
+  }
+
+  public async joinWifiNetwork(ssid: string, _pass: string): Promise<WifiJoinResult> {
+    if (!this.networks.some((n) => n.ssid === ssid)) {
+      this.networks.push({ ssid, pass: _pass });
+    }
+    this.joinStatus = { attempts: 0, last_error: null, joined_ssid: ssid, ip: "192.168.0.51", ap_fallback: false };
+    return { joined: true, rebooting: false, ssid, mode: "Station" };
+  }
+
+  public async getWifiNetworks(): Promise<WifiNetworksResult> {
+    return { networks: this.networks.map((n) => ({ ssid: n.ssid })), mode: "Station" };
+  }
+
+  public async forgetWifiNetwork(ssid: string): Promise<void> {
+    this.networks = this.networks.filter((n) => n.ssid !== ssid);
+  }
+
+  public async getWifiJoinStatus(): Promise<WifiJoinStatus> {
+    return { ...this.joinStatus };
   }
 
   public async getAnimationList(): Promise<Animation[]> {
@@ -75,7 +103,7 @@ export class DummyDeviceApi implements DeviceApi {
     console.log("DummyDeviceApi.sendMessage:", message);
   }
 
-  public async sendBinary(buffer: Uint8Array) {
+  public async sendBinary(buffer: Uint8Array<ArrayBuffer>) {
     console.log("DummyDeviceApi.sendBinary:", buffer);
   }
 
