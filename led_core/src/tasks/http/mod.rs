@@ -127,12 +127,7 @@ impl<B: Board> AppBuilder for AppProps<B> {
                     )
                     .route("/join-status", get_service(JoinStatusHandler::<B>::new(board.clone())))
                     .route("/status", get_service(GetStatusHandler::new(status_watch)))
-                    .route(
-                        "/playlists",
-                        get_service(PlaylistLibraryHandler::new(local_fs.clone()))
-                            .post_service(PlaylistLibraryHandler::new(local_fs.clone()))
-                            .delete_service(PlaylistLibraryHandler::new(local_fs.clone())),
-                    )
+                    .route_service("/playlists", PlaylistLibraryHandler::new(local_fs.clone()))
                     .nest(
                         "/info",
                         Router::new()

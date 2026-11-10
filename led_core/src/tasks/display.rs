@@ -287,7 +287,7 @@ async fn publish_status(
         paused,
         streaming,
         status_screen: status_screen_on,
-        power_limit,
+        power_limit_pct: (power_limit * 100.0).clamp(0.0, 100.0) as u8,
         uptime_s: started.elapsed().as_secs(),
     };
 

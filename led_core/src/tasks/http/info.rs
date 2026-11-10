@@ -13,7 +13,7 @@ use picoserve::{
 const STATUS_PLACEHOLDER: &str = concat!(
     r#"{"now_playing":{"kind":"Blank","title":"Booting…","animation":"Blank","elapsed_ms":0,"duration_ms":0},"#,
     r#""playlist_index":0,"playlist_len":0,"paused":false,"streaming":false,"status_screen":false,"#,
-    r#""power_limit":0.0,"uptime_s":0}"#
+    r#""power_limit_pct":0,"uptime_s":0}"#
 );
 
 const PLAYLIST_PLACEHOLDER: &str = r#"{"playlist":[],"source":"Default","index":0}"#;

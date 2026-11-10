@@ -121,7 +121,9 @@ pub struct BoardStatus {
     pub streaming: bool,
     /// A status card (join progress, link lost, …) is on top.
     pub status_screen: bool,
-    pub power_limit: f32,
+    /// Power budget in percent — an integer so the status JSON never drags
+    /// the float formatter into the firmware image.
+    pub power_limit_pct: u8,
     pub uptime_s: u64,
 }
 

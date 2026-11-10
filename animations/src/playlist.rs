@@ -43,13 +43,67 @@ impl<'de> Deserialize<'de> for PlaylistItem {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match ItemWire::deserialize(deserializer)? {
-            ItemWire::Legacy((animation, duration_ms)) => PlaylistItem::new(animation, duration_ms),
-            ItemWire::Modern { animation, duration_ms, label } => PlaylistItem {
-                animation,
-                duration_ms: duration_ms.clamp(MIN_DURATION_MS, MAX_DURATION_MS),
-                label: label.filter(|l| !l.is_empty()),
-            },
+        // Hand-written visitor instead of `#[serde(untagged)]`: untagged
+        // buffers the whole item through `Content` twice, and on the wifi
+        // image (≈20 KB from the 508 K slot ceiling) that buffering is real
+        // flash we need for everything else.
+        deserializer.deserialize_any(ItemVisitor)
+    }
+}
+
+struct ItemVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ItemVisitor {
+    type Value = PlaylistItem;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("a [animation, duration_ms] pair or an {animation, duration_ms, label?} object")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        use serde::de::Error as _;
+
+        let animation = seq
+            .next_element::<AnimationEnum>()?
+            .ok_or_else(|| A::Error::custom("missing animation"))?;
+        let duration_ms = seq
+            .next_element::<u32>()?
+            .ok_or_else(|| A::Error::custom("missing duration_ms"))?;
+
+        Ok(PlaylistItem::new(animation, duration_ms))
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as _;
+
+        let mut animation: Option<AnimationEnum> = None;
+        let mut duration_ms: Option<u32> = None;
+        let mut label: Option<String> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "animation" => animation = Some(map.next_value()?),
+                "duration_ms" | "durationMs" => duration_ms = Some(map.next_value()?),
+                "label" => label = map.next_value::<Option<String>>()?,
+                _ => {
+                    let _: serde::de::IgnoredAny = map.next_value()?;
+                }
+            }
+        }
+
+        let animation = animation.ok_or_else(|| A::Error::missing_field("animation"))?;
+        let duration_ms = duration_ms.ok_or_else(|| A::Error::missing_field("duration_ms"))?;
+
+        Ok(PlaylistItem {
+            animation,
+            duration_ms: duration_ms.clamp(MIN_DURATION_MS, MAX_DURATION_MS),
+            label: label.filter(|l| !l.is_empty()),
         })
     }
 }

@@ -8,6 +8,10 @@
 //! the panel stays a WebSocket `Playlist` message (with `save`), so the
 //! "what is live right now" story keeps exactly one source (the display
 //! worker), and an upload can never interrupt the show.
+//!
+//! Registered as a single `MethodHandlerService`: the wifi image sits ~20 KB
+//! from the 508 K slot ceiling, and three `*_service` registrations would
+//! monomorphise this whole (serde-heavy) handler once per method.
 
 use alloc::format;
 use alloc::string::String;
@@ -21,7 +25,7 @@ use picoserve::{
     io::Read,
     request::Request,
     response::{IntoResponse, ResponseWriter, StatusCode},
-    routing::RequestHandlerService,
+    routing::MethodHandlerService,
 };
 
 /// Bodies are parsed whole (they are small), so cap the damage a stray POST
@@ -42,15 +46,15 @@ impl<FS: LocalFsTrait + Clone> PlaylistLibraryHandler<FS> {
     }
 }
 
-impl<FS: LocalFsTrait + Clone> RequestHandlerService<()> for PlaylistLibraryHandler<FS> {
-    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+impl<FS: LocalFsTrait + Clone> MethodHandlerService<()> for PlaylistLibraryHandler<FS> {
+    async fn call_method_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         _: &(),
-        _: (),
+        (): (),
+        method: &str,
         mut req: Request<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        let method = req.parts.method();
         let query = req.parts.query().map(|q| q.0).unwrap_or("");
         let name = query_param(query, "name").and_then(sanitize_name);
 
@@ -143,9 +147,12 @@ impl<FS: LocalFsTrait + Clone> RequestHandlerService<()> for PlaylistLibraryHand
     }
 }
 
-/// `[{name,size},…]` for GET without a name; only the library's own files.
+/// `[{"name":"…","size":n},…]` for GET without a name; only the library's
+/// own files. Built with `format!` — a `serde_json::Value` pipeline for this
+/// one line is several KB of code we cannot afford.
 fn library_listing(entries: &[DirEntry]) -> String {
-    let mut out = Vec::new();
+    let mut out = String::from("[");
+    let mut first = true;
 
     for entry in entries {
         if entry.file_type != FileType::File || !entry.name.ends_with(EXT) {
@@ -154,13 +161,24 @@ fn library_listing(entries: &[DirEntry]) -> String {
 
         let name = &entry.name[..entry.name.len() - EXT.len()];
 
-        out.push(serde_json::json!({
-            "name": name,
-            "size": entry.size,
-        }));
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_')
+        {
+            continue; // foreign file — not ours, not JSON-escapable-safe
+        }
+
+        if first {
+            first = false;
+        } else {
+            out.push(',');
+        }
+
+        out.push_str(&format!("{{\"name\":\"{name}\",\"size\":{}}}", entry.size));
     }
 
-    serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    out.push(']');
+    out
 }
 
 fn path(name: &str) -> String {
