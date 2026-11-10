@@ -18,3 +18,11 @@ members = [
 debug = 2
 lto = true
 opt-level = 'z'
+
+# Render hot path only: `z` taxes the animation draw loops badly on the
+# M33 (soft-ish float + no unrolling in the per-pixel code). Keep this
+# per-crate — the wifi build has only ~20 K of 508 K slot headroom, so
+# widening the override (or raising firmware/led-core too) requires
+# re-measuring both firmware sizes; see AGENTS.md "Firmware sizes".
+[profile.release.package.animations]
+opt-level = "s"

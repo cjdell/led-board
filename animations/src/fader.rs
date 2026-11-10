@@ -1,7 +1,6 @@
 use crate::common::{Animation, AnimationParams, BufferTargetRgb888};
 use alloc::boxed::Box;
 use embedded_graphics::pixelcolor::{Rgb888, RgbColor as _};
-use tupl::NonEmptyTuple as _;
 
 // New struct to hold the fading state
 pub struct AnimationFader {
@@ -87,19 +86,24 @@ impl AnimationFader {
 
         self.current_animation.1 += delta_ms;
 
-        // Draw current animation into old_buffer
+        // Draw current animation into buffer_1
         self.current_animation
             .0
             .draw(self.current_animation.1, &params, buffer_1);
 
-        // Draw previous animation into target (for fading)
+        // Draw previous animation into buffer_2 (for fading), blending into
+        // buffer_1. buffer_2 is only cleared on the frames that actually
+        // use it — the runner stopped paying a full second-buffer fill per
+        // frame for the steady-state case (no fade, no override).
         if let Some(ref mut prev) = self.previous_animation {
+            buffer_2.buffer.fill(Rgb888::default());
             prev.0.draw(prev.1, &params, buffer_2);
 
             apply_fade(buffer_1, self.fade_progress, buffer_2, 1.0 - self.fade_progress);
         }
 
         if let Some(ref mut override_animation) = self.override_animation {
+            buffer_2.buffer.fill(Rgb888::default());
             override_animation.0.draw(override_animation.1, &params, buffer_2);
 
             apply_fade(

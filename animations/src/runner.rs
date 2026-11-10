@@ -1,4 +1,4 @@
-use crate::common::{Animation, BufferTarget, BufferTargetRgb888};
+use crate::common::{Animation, BufferTargetRgb888};
 use crate::fader::AnimationFader;
 use crate::playlist::{Playlist, PlaylistItem};
 use crate::AnimationParams;
@@ -192,7 +192,6 @@ impl AnimationRunner {
         }
 
         buffer_1.buffer.fill(Rgb888::default());
-        buffer_2.buffer.fill(Rgb888::default());
 
         let mut seek = self.rem + delta_ms;
         let mut params = AnimationParams::default();

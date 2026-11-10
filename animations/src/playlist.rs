@@ -24,20 +24,6 @@ pub struct PlaylistItem {
     pub label: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ItemWire {
-    /// Legacy tuple: `["Intensity", 10000]` / `[{"Aurora": null}...]`.
-    Legacy((AnimationEnum, u32)),
-    Modern {
-        animation: AnimationEnum,
-        #[serde(alias = "durationMs")]
-        duration_ms: u32,
-        #[serde(default)]
-        label: Option<String>,
-    },
-}
-
 impl<'de> Deserialize<'de> for PlaylistItem {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

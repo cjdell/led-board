@@ -1,5 +1,5 @@
 use crate::TOTAL_PIXELS;
-use crate::common::{Animation, AnimationParams, BufferTarget, BufferTargetRgb888, CloneableAnimation, HEIGHT, WIDTH};
+use crate::common::{Animation, AnimationParams, BufferTargetRgb888, CloneableAnimation, HEIGHT, WIDTH};
 use crate::draw::{draw_circle, draw_circle_filled, draw_line, draw_rect_filled, draw_triangle_filled};
 use alloc::{
     boxed::Box,
@@ -14,7 +14,6 @@ use embedded_graphics::{
         ascii::{FONT_10X20, FONT_6X12},
     },
     pixelcolor::{Rgb888, RgbColor},
-    primitives::{Circle, Primitive as _, PrimitiveStyle},
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use micromath::F32Ext;
@@ -656,7 +655,6 @@ impl Animation for AnimationEnum {
             AnimationEnum::RainbowWheel => {
                 let center_x = WIDTH as f32 / 2.0;
                 let center_y = HEIGHT as f32 / 2.0;
-                let radius = (WIDTH.min(HEIGHT) as f32) / 2.0 - 2.0; // Leave a small margin
 
                 let angle_offset = (ms_since_start as f32) * 0.001; // Slow rotation: 1 rad/s
 
@@ -665,7 +663,6 @@ impl Animation for AnimationEnum {
                         // Calculate distance from center
                         let dx = x as f32 - center_x;
                         let dy = y as f32 - center_y;
-                        let distance = (dx * dx + dy * dy).sqrt();
 
                         // Only draw pixels inside the circle
                         // if distance <= radius {
@@ -719,8 +716,6 @@ impl Animation for AnimationEnum {
 
                 // Rotation angles based on time (in radians)
                 let t = ms_since_start as f32 * 0.0008; // ~0.8 rad/s total rotation
-                let cos_t = t.cos();
-                let sin_t = t.sin();
 
                 let cos_x = (t * 0.7).cos();
                 let sin_x = (t * 0.7).sin();
@@ -1167,7 +1162,6 @@ impl Animation for AnimationEnum {
 
                 // Center “core” — pulses with beat
                 let core_size = (4.0 + beat * 8.0) as i32;
-                let pulse = (f32::sin(time * 8.0) * 0.5 + 0.5) * beat;
                 let hue = (time * 40.0) % 360.0;
                 let r = ((hue + 0.0) % 360.0 / 360.0 * 255.0) as u8;
                 let g = ((hue + 120.0) % 360.0 / 360.0 * 255.0) as u8;
@@ -1185,7 +1179,6 @@ impl Animation for AnimationEnum {
                 const WIDTH: usize = 60;
                 const HEIGHT: usize = 40;
 
-                let beat = params.beat as f32 / 255.0;
                 let low = params.low as f32 / 255.0;
                 let med = params.med as f32 / 255.0;
                 let high = params.high as f32 / 255.0;
@@ -1261,10 +1254,10 @@ impl Animation for AnimationEnum {
                 // Draw field lines between poles
                 for y in 0..HEIGHT {
                     for x in 0..WIDTH {
-                        let dx1 = (x as f32 - pole1_x as f32);
-                        let dy1 = (y as f32 - pole_y as f32);
-                        let dx2 = (x as f32 - pole2_x as f32);
-                        let dy2 = (y as f32 - pole_y as f32);
+                        let dx1 = x as f32 - pole1_x as f32;
+                        let dy1 = y as f32 - pole_y as f32;
+                        let dx2 = x as f32 - pole2_x as f32;
+                        let dy2 = y as f32 - pole_y as f32;
 
                         let dist1 = (dx1 * dx1 + dy1 * dy1).sqrt();
                         let dist2 = (dx2 * dx2 + dy2 * dy2).sqrt();
@@ -1319,7 +1312,6 @@ impl Animation for AnimationEnum {
                 let beat = params.beat as f32 / 255.0;
                 let low = params.low as f32 / 255.0;
                 let med = params.med as f32 / 255.0;
-                let high = params.high as f32 / 255.0;
 
                 let time = ms_since_start as f32 / 100.0;
 

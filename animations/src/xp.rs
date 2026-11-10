@@ -8,17 +8,14 @@
 //! Press SPACE to cycle through render modes
 
 use crate::BufferTargetRgb565;
-use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cell::OnceCell;
 use embedded_3dgfx::K3dengine;
 use embedded_3dgfx::command_buffer::CommandBuffer;
 use embedded_3dgfx::config::apply_default_caps;
 use embedded_3dgfx::mesh::{Geometry, K3dMesh, RenderMode};
 use embedded_3dgfx::renderer::FrameCtx;
 use embedded_graphics_core::pixelcolor::Rgb565;
-use embedded_graphics_core::prelude::*;
 use micromath::num_traits::Float;
 use nalgebra::{Point3, Vector3};
 use once_cell::sync::Lazy;

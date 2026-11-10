@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use core::future::Future;
 use embedded_graphics::{
     geometry::{Dimensions, Point, Size},
@@ -6,8 +5,6 @@ use embedded_graphics::{
     primitives::Rectangle,
 };
 use smart_leds::RGB8;
-
-use crate::error;
 
 pub const WIDTH: usize = 60;
 pub const HEIGHT: usize = 40;
@@ -43,17 +40,13 @@ impl<DRIVER: Ws2812ParallelDriver<PIXELS_PER_STRIP>> LedScreen<DRIVER> {
         }
     }
 
+    /// Copy a rendered frame (row-major, 60×40) into the panel buffer.
+    /// Takes a reference — a per-frame `Vec` here once meant a 7.2 KB
+    /// heap round trip every cycle of the display worker.
     pub fn copy_eg_buffer(&mut self, buffer: &[Rgb888; TOTAL_PIXELS]) {
-        self.copy_buffer(buffer.iter().map(|p| RGB8::new(p.r(), p.g(), p.b())).collect());
-    }
-
-    pub fn copy_buffer(&mut self, buffer: Vec<RGB8>) {
-        if buffer.len() != TOTAL_PIXELS {
-            error!("write_buffer: Bad pixel count: {}", buffer.len());
-            return;
+        for (dst, src) in self.buffer.iter_mut().zip(buffer) {
+            *dst = RGB8::new(src.r(), src.g(), src.b());
         }
-
-        self.buffer.copy_from_slice(&buffer);
     }
 
     pub async fn flush(&mut self) {

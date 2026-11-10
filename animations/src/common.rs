@@ -2,9 +2,8 @@ use alloc::boxed::Box;
 use embedded_graphics::{
     Pixel,
     draw_target::DrawTarget,
-    geometry::{Dimensions, OriginDimensions, Point, Size},
+    geometry::{Dimensions, OriginDimensions, Size},
     pixelcolor::{PixelColor, Rgb565, Rgb888, RgbColor as _},
-    primitives::Rectangle,
 };
 use micromath::F32Ext;
 
@@ -69,16 +68,6 @@ impl Clone for Box<dyn Animation> {
     }
 }
 
-macro_rules! impl_animation_clone {
-    ($type:ty) => {
-        impl crate::common::CloneableAnimation for $type {
-            fn clone_box(&self) -> Box<dyn crate::common::Animation> {
-                Box::new(self.clone())
-            }
-        }
-    };
-}
-
 impl<C> OriginDimensions for BufferTarget<C>
 where
     C: PixelColor + Default,
@@ -128,27 +117,27 @@ pub fn apply_power_limit(buffer: &mut BufferTarget<Rgb888>, power_limit: f32) {
     let max_possible_power = num_leds as f32 * 765.0; // 255*3 per LED
     let max_allowed_power = power_limit * max_possible_power; // e.g., 50% power limit
 
-    // Step 1: Calculate current total power
-    let mut total_power = 0.0;
+    // Step 1: Calculate current total power. Exact integer sum — the hot
+    // loop runs every frame and 32-bit adds beat f32 adds under the size
+    // optimiser (2400 px × 765 fits easily).
+    let mut total_power: u32 = 0;
     for p in &buffer.buffer {
-        total_power += p.r() as f32 + p.g() as f32 + p.b() as f32;
+        total_power += p.r() as u32 + p.g() as u32 + p.b() as u32;
     }
 
     // Step 2: If we're under the limit, do nothing
-    if total_power <= max_allowed_power || total_power == 0.0 {
+    if (total_power as f32) <= max_allowed_power || total_power == 0 {
         return;
     }
 
-    // Step 3: Calculate scaling factor
-    let scale_factor = max_allowed_power / total_power;
+    // Step 3: Calculate scaling factor, and a 256-entry value LUT: 256
+    // float multiplies + rounds beat 7200 of them per frame, and the per-
+    // pixel pass becomes three byte loads.
+    let scale_factor = max_allowed_power / total_power as f32;
+    let lut: [u8; 256] = core::array::from_fn(|i| (i as f32 * scale_factor).round().min(255.0) as u8);
 
     // Step 4: Apply scaling to each LED
     for p in buffer.buffer.iter_mut() {
-        let r = (p.r() as f32 * scale_factor).round() as u8;
-        let g = (p.g() as f32 * scale_factor).round() as u8;
-        let b = (p.b() as f32 * scale_factor).round() as u8;
-
-        // Clamp to 0-255 (shouldn't exceed due to scaling, but just in case)
-        *p = Rgb888::new(r.min(255), g.min(255), b.min(255));
+        *p = Rgb888::new(lut[p.r() as usize], lut[p.g() as usize], lut[p.b() as usize]);
     }
 }

@@ -54,7 +54,6 @@ dependencies = [
  "ringbuf",
  "serde",
  "static_cell",
- "tupl",
 ]
 
 [[package]]
@@ -3955,25 +3954,6 @@ dependencies = [
  "rand 0.10.2",
  "sha1 0.11.0",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tupl"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef37af0228ae3074038f7c2c7104a5bed638c19eb3e752535218789ca631a209"
-dependencies = [
- "tupl-macros",
-]
-
-[[package]]
-name = "tupl-macros"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3a3fde504097ce1ff589d5c99f3cb7639dad5c98e73d469c7526413f08963c"
-dependencies = [
- "proc-macro2",
- "quote",
 ]
 
 [[package]]

@@ -6,9 +6,13 @@ extern crate alloc;
 
 use alloc::{string::ToString as _, sync::Arc, vec::Vec};
 use animations::PlaylistItem;
+#[cfg(any(feature = "wifi", feature = "usb_ethernet", feature = "ppp"))]
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
-use embassy_executor::{Executor, Spawner};
+use embassy_executor::Spawner;
+// Used only by the `core1` feature's EXECUTOR1 below.
+#[cfg(feature = "core1")]
+use embassy_executor::Executor;
 use embassy_futures::join::join;
 #[cfg(not(feature = "radio"))]
 use embassy_net::Stack;
@@ -19,14 +23,23 @@ use embassy_rp::{
     bootsel::is_bootsel_pressed,
     dma,
     flash::{self, Flash},
-    gpio::{Level, Output},
-    multicore::spawn_core1,
     peripherals::*,
     pio::{InterruptHandler, Pio},
-    trng::{self, Trng},
+    trng::{self},
     usb,
     watchdog::Watchdog,
 };
+// The cyw43 PIO-SPI + TRNG bring-up below is only wired into the
+// IP-stack network features; the radio build lets the C3 own WiFi.
+#[cfg(any(feature = "wifi", feature = "usb_ethernet", feature = "ppp"))]
+use embassy_rp::{
+    gpio::{Level, Output},
+    trng::Trng,
+};
+// `core1` feature only — the pre-Nov-2026 display arrangement (see the
+// cfg blocks below); the default single-core build never references it.
+#[cfg(feature = "core1")]
+use embassy_rp::multicore::spawn_core1;
 use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap as Heap;
@@ -45,6 +58,7 @@ use led_core::tasks::{display, heartbeat, http, pump};
 #[cfg(not(feature = "radio"))]
 use picoserve::AppRouter;
 use rp235x_embedded_tools::flash::{FlashStorage, LittleFsFlashStorage};
+#[cfg(feature = "core1")]
 use static_cell::StaticCell;
 
 #[cfg(feature = "defmt_tcp")]
@@ -93,7 +107,9 @@ bind_interrupts!(struct Irqs {
     UART0_IRQ => embassy_rp::uart::BufferedInterruptHandler<UART0>;
 });
 
+#[cfg(feature = "core1")]
 static mut CORE1_STACK: embassy_rp::multicore::Stack<32768> = embassy_rp::multicore::Stack::new();
+#[cfg(feature = "core1")]
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
 
 #[embassy_executor::main]
@@ -201,33 +217,39 @@ async fn main(spawner: Spawner) {
 
     rp235x_ota::mark_firmware_good();
 
-    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let watchdog = Watchdog::new(p.WATCHDOG);
     info!("Reset Reason: {:?}", defmt::Debug2Format(&watchdog.reset_reason()));
     // watchdog.start(Duration::from_secs(15));
     let watchdog: SharedWatchdog = Arc::new(RwLock::new(watchdog));
 
-    let cs = Output::new(p.PIN_25, Level::High);
-    let mut pio = Pio::new(p.PIO0, Irqs);
-    let spi = PioSpi::new(
-        &mut pio.common,
-        pio.sm0,
-        // ÷2 → 75 MHz SM clock → 37.5 MHz GSPI (half the SM clock: the PIO programs
-        // spend two SM cycles per SPI bit), inside the CYW43439's 50 MHz spec and an
-        // integer divider. At this speed the program-selection logic (embassy PR
-        // #4792, in our locked checkout) loads the sample-on-clock-low program, the
-        // one that actually moves bulk data above ~25 MHz — the old RM2 workaround
-        // for issue #3960 predates both #4792 and the #6001 RP2350 RX DMA fix and
-        // only got the 25 MHz / sample-on-high tier. See fletcher.cool/blog/pico-2w-wifi-throughput.
-        DEFAULT_CLOCK_DIVIDER,
-        pio.irq0,
-        cs,
-        p.PIN_24,
-        p.PIN_29,
-        dma::Channel::new(p.DMA_CH0, Irqs),
-        dma::Channel::new(p.DMA_CH1, Irqs),
-    );
-
-    let trng = Trng::new(p.TRNG, Irqs, trng::Config::default());
+    // The cyw43 PIO-SPI link and TRNG feed only the network features that
+    // run an IP stack (wifi's cyw43, and the ppp / usb_ethernet modems);
+    // radio builds leave these peripherals unclaimed (GP23/24/25/29).
+    #[cfg(any(feature = "wifi", feature = "usb_ethernet", feature = "ppp"))]
+    let (spi, trng) = {
+        let cs = Output::new(p.PIN_25, Level::High);
+        let mut pio = Pio::new(p.PIO0, Irqs);
+        let spi = PioSpi::new(
+            &mut pio.common,
+            pio.sm0,
+            // ÷2 → 75 MHz SM clock → 37.5 MHz GSPI (half the SM clock: the PIO programs
+            // spend two SM cycles per SPI bit), inside the CYW43439's 50 MHz spec and an
+            // integer divider. At this speed the program-selection logic (embassy PR
+            // #4792, in our locked checkout) loads the sample-on-clock-low program, the
+            // one that actually moves bulk data above ~25 MHz — the old RM2 workaround
+            // for issue #3960 predates both #4792 and the #6001 RP2350 RX DMA fix and
+            // only got the 25 MHz / sample-on-high tier. See fletcher.cool/blog/pico-2w-wifi-throughput.
+            DEFAULT_CLOCK_DIVIDER,
+            pio.irq0,
+            cs,
+            p.PIN_24,
+            p.PIN_29,
+            dma::Channel::new(p.DMA_CH0, Irqs),
+            dma::Channel::new(p.DMA_CH1, Irqs),
+        );
+        let trng = Trng::new(p.TRNG, Irqs, trng::Config::default());
+        (spi, trng)
+    };
 
     let ethernet_signal = make_static!(EthernetSignal, EthernetSignal::new());
 

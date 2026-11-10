@@ -47,6 +47,13 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     // in the log stream instead of having to be inferred from the panel.
     let mut frames: u32 = 0;
     let mut window_start = last_time;
+    // Phase timing (µs accumulated): "draw" is the animation render,
+    // "panel" is screen scatter + transpose + the wait for the previous
+    // frame's wire time. With the pipelined driver, panel ≈ wire − draw
+    // means the panel transfer is the clock (~9 ms, ~110 fps); if draw is
+    // the bigger share, animation CPU is the clock.
+    let mut draw_us: u64 = 0;
+    let mut panel_us: u64 = 0;
 
     let mut power_limit = 0.1f32;
     // Status-screen mode: when set, the animation is drawn over the still
@@ -154,6 +161,8 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
             }
         }
 
+        let t_render = embassy_time::Instant::now();
+
         runner.update(delta_ms, &mut buffer_1, &mut buffer_2);
 
         if let Some((animation, ms)) = status_screen.as_mut() {
@@ -163,13 +172,22 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
         apply_power_limit(&mut buffer_1, power_limit);
 
+        let t_panel = embassy_time::Instant::now();
+
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;
+
+        let t_flushed = embassy_time::Instant::now();
+        draw_us += t_panel.duration_since(t_render).as_micros() as u64;
+        panel_us += t_flushed.duration_since(t_panel).as_micros() as u64;
 
         // ------------------------------------------------------------------
         // Live-state feed.
         // ------------------------------------------------------------------
-        let status = runner.status();
+        // `status()` clones the playlist item (heap Strings), so the hot
+        // dirty-check uses only the cursor; the full snapshot is built just
+        // before publishing.
+        let index = runner.playlist().current_index();
 
         // A preview ending is only visible inside the runner — sync the meta.
         if !runner.override_active() {
@@ -185,13 +203,15 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
         let status_screen_on = status_screen.is_some();
         let override_on = runner.override_active();
 
-        dirty |= status.index != last_index
+        dirty |= index != last_index
             || override_on != last_override
             || runner.is_paused() != last_paused
             || status_screen_on != last_status_screen
             || power_limit != last_power;
 
         if dirty || now.duration_since(last_publish).as_millis() >= 1_000 {
+            let status = runner.status();
+
             publish_status(
                 &status_tx,
                 &status,
@@ -223,13 +243,17 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
         let window = window_start.elapsed().as_millis();
         if window >= 10_000 {
             info!(
-                "display: {} frames in {} ms ({} fps), power limit {}",
+                "display: {} frames in {} ms ({} fps), draw {} us/frame, panel {} us/frame, power limit {}",
                 frames,
                 window,
                 frames * 1000 / window.max(1) as u32,
+                draw_us / frames as u64,
+                panel_us / frames as u64,
                 power_limit
             );
             frames = 0;
+            draw_us = 0;
+            panel_us = 0;
             window_start = embassy_time::Instant::now();
         }
     }

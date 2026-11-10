@@ -25,7 +25,6 @@ static_cell = "2.1.1"
 once_cell = { version = "1.21.4", default-features = false, features = [
     "alloc",
 ] }
-tupl = "0.5.1"
 serde = { version = "1.0.228", default-features = false, features = [
     "alloc",
     "derive",

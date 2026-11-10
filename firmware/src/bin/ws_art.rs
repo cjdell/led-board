@@ -100,7 +100,7 @@ async fn main(spawner: Spawner) {
     // --- Colour self-test -------------------------------------------------
     // Each colour proves a different stage: red/green/blue prove the data path
     // and per-channel wiring; white proves all three channels at once.
-    for (name, color) in [
+    for (_name, color) in [
         ("red", Rgb888::new(255, 0, 0)),
         ("green", Rgb888::new(0, 255, 0)),
         ("blue", Rgb888::new(0, 0, 255)),

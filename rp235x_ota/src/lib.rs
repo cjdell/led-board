@@ -27,13 +27,9 @@ const REBOOT2_FLAG_NO_RETURN_ON_SUCCESS: u32 = 0x100;
 
 const RP2350_ARM_S: u32 = 0xe48bff59;
 
-const FLASH_BASE_RAW: u32 = 0x1c000000; // XIP_NOCACHE_NOALLOC_NOTRANSLATE_BASE
-const FLASH_BASE: u32 = 0x10000000;
-const FLASH_SIZE: usize = 4 * 1024 * 1024;
 const BLOCK_SIZE: usize = 4 * 1024;
 
 const SYS_INFO_BOOT_INFO: u32 = 0x0040;
-const BOOT_TBYB_AND_UPDATE_FLAG_BUY_PENDING: u8 = 0x1;
 const BOOT_TYPE_FLASH_UPDATE: u8 = 0x4;
 
 pub fn mark_firmware_good() {

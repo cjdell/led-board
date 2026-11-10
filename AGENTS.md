@@ -351,11 +351,29 @@ deck UI rewrite (40.5 KB gz bundle): **wifi 500,288 B (~20 K headroom), radio
 423,812 B**, and `radio,defmt_tcp,console` fits again too. The `wifi,defmt_tcp`
 overflow that briefly appeared mid-work was absorbed by the Bootstrap-less
 bundle — if the SPA grows past ~55 KB gz, wifi starts busting the slot again.
+After the frame-pipeline work (pipelined DMA driver, `animations` crate
+`opt-level = "s"` — deliberately per-crate, `opt-level = 2` costs +7.6 K):
+**wifi 504,056 B (~16 K headroom), radio 425,468 B**.
 C3 ≈ 690 KB (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure
 anywhere else.
 
 ## Protocol notes
 
+- **Panel frame pipeline (Nov 2026)**: `ws2812p::write` is pipelined fire-and-
+  forget — transpose into the idle DMA buffer (overlaps the previous frame on
+  the wire), busy-poll the DMA channel, 60 µs latch timer, then arm the next
+  `dma_push` and **`mem::forget` the returned `Transfer`** (dropping it runs
+  the channel-abort path and kills the frame — do not "fix" the leak; the
+  completion signal is the busy-bit poll). The PIO program has no explicit
+  PULLs (auto_fill threshold 32): exactly 10 SM cycles per bit period at
+  8 MHz → exact 800 kHz. Wire floor per frame = 300 px × 24 × 1.25 µs =
+  9.00 ms + latch ⇒ **~110 fps ceiling**; frame cycle = max(wire, CPU). If
+  render+transpose ever exceeds wire time the result is a torn frame, not a
+  hang. The ≥50 µs inter-frame latch gap is the driver's responsibility —
+  do not remove the timer to "save" microseconds, the strip never latches
+  without it. The 10 s ledger line reports `draw … us/frame, panel … us/
+  frame` to tell which side is the clock. `LedScreen::copy_eg_buffer` takes
+  `&[Rgb888; TOTAL_PIXELS]` (the per-frame 7.2 KB `collect()` is gone).
 - **Web live-status protocol (Nov 2026)**: the display worker is the single
   source of truth and publishes `StatusWatch`/`PlaylistWatch` (pre-serialised
   JSON `Arc<str>`s in `led_core::types`); the WS pump pushes them every 1 s +

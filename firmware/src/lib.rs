@@ -7,7 +7,6 @@ extern crate alloc;
 pub mod board;
 pub mod tasks;
 pub mod types;
-pub mod ws2812;
 pub mod ws2812p;
 
 // The system logic (config, screen model, web app) lives in led-core and is

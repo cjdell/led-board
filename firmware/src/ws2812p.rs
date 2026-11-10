@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use defmt::info;
 use embassy_rp::{
     Peri,
     clocks::clk_sys_freq,
@@ -33,12 +32,15 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
     ///              pins LOW  if bit=0       (data window)
     ///   T3 cycles: all 8 pins LOW           (stop/reset)
     ///
-    /// One OSR word = one 8-bit column (bit N of each of the 8 strips).
-    /// We consume 8 bits per bit-period (auto-pull threshold = 8).
+    /// One OSR word feeds four OUTs (auto_fill, threshold 32): the loop is
+    /// exactly T1 + T2 + T3 = 10 SM cycles per bit period, so the SM clock
+    /// divisor below lands on the exact 800 kHz WS2812 rate. (The previous
+    /// program paid for 4 explicit PULLs per wrap — 11 cycles per bit,
+    /// 9 % of the wire budget lost.)
+    ///
+    /// Timing check at 8 MHz SM cycles: T0H = 250 ns, T1H = 875 ns,
+    /// T0L = 1000 ns, T1L = 375 ns — all inside WS2812B tolerance.
     pub fn new(common: &mut Common<'a, PIO>) -> Self {
-        // One side-set pin is used as a scratch/enable line — here we
-        // instead drive all timing via SET/OUT on the 8 data pins
-        // directly, so no side-set is needed.
         let mut a: Assembler<32> = Assembler::new();
 
         let mut wrap_target = a.label();
@@ -46,36 +48,25 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
 
         a.bind(&mut wrap_target);
 
-        a.pull(true, true); // ifempty=false, block=true
-        a.pull(true, true); // ifempty=false, block=true
-        a.pull(true, true); // ifempty=false, block=true
-        a.pull(true, true); // ifempty=false, block=true
+        // ── T1: drive all 8 lines HIGH (start of bit pulse) ──────────────
+        // SET pins, 0xFF only does 5 bits — MOV pins, !NULL gets all eight.
+        a.mov_with_delay(
+            pio::program::MovDestination::PINS,
+            pio::program::MovOperation::Invert,
+            pio::program::MovSource::NULL,
+            T1 - 1,
+        );
 
-        for _ in 0..4 {
-            // ── T1: drive all 8 lines HIGH (start of bit pulse) ──────────
-            // SET pins, 0xFF would need 8-bit set; SET only does 5 bits.
-            // Work-around: use MOV pins, !NULL  (all-ones -> pins)
-            // then delay for T1-1 additional cycles.
-            a.mov_with_delay(
-                pio::program::MovDestination::PINS,
-                pio::program::MovOperation::Invert,
-                pio::program::MovSource::NULL,
-                T1 - 1,
-            );
+        // ── T2: output the data column; pins stay HIGH for 1-bits ────────
+        a.out_with_delay(OutDestination::PINS, 8, T2 - 1);
 
-            // ── T2: output the data column; pins stay HIGH for 1-bits ────
-            // OUT PINS, 8  — shifts 8 bits from OSR to the 8 output pins.
-            // Delay for T2-1 additional cycles.
-            a.out_with_delay(OutDestination::PINS, 8, T2 - 1);
-
-            // ── T3: drive all 8 lines LOW (end of bit pulse) ─────────────
-            a.mov_with_delay(
-                pio::program::MovDestination::PINS,
-                pio::program::MovOperation::None,
-                pio::program::MovSource::NULL,
-                T3 - 1,
-            );
-        }
+        // ── T3: drive all 8 lines LOW (end of bit pulse) ─────────────────
+        a.mov_with_delay(
+            pio::program::MovDestination::PINS,
+            pio::program::MovOperation::None,
+            pio::program::MovSource::NULL,
+            T3 - 1,
+        );
 
         a.bind(&mut wrap_source);
 
@@ -87,26 +78,47 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
 
 // The strip count and the driver contract are defined by the shared screen
 // model (led-core); this file is the PIO implementation of that contract.
-use led_core::led_screen::{Ws2812ParallelDriver, N_STRIPS};
+use led_core::led_screen::{N_STRIPS, Ws2812ParallelDriver};
 
 const BITS: usize = 24;
 
-/// Parallel WS2812 driver for 8 simultaneous strips.
+/// WS2812 latch: the reset-low gap between frames that makes a strip show
+/// the data just shifted in (tRESET ≥ 50 µs). Pipelining removed the CPU's
+/// incidental inter-frame pause, so the driver owns this delay explicitly.
+const LATCH_US: u64 = 60;
+
+/// Busy-poll interval while waiting for the in-flight frame to finish.
+/// Only the overshoot past true completion costs frame time (~1 %).
+const DMA_POLL_US: u64 = 100;
+
+/// Parallel WS2812 driver for 8 simultaneous strips, fully pipelined:
+/// while frame N is on the wire, `write` for frame N+1 transposes into
+/// the other DMA buffer and returns once N's transfer is done — the
+/// display worker's render time hides inside the 9 ms wire time.
+///
+/// Frame cycle = max(wire + latch, CPU). Wire = N_LEDS × 24 bit periods
+/// × 1.25 µs = 9.00 ms at N_LEDS = 300, so the panel ceiling is ~110 fps;
+/// if render+transpose ever exceeds the wire time the next buffer is
+/// still being filled as its transfer starts (a torn frame, not a hang).
 ///
 /// - `S`        – PIO state machine index
 /// - `N_LEDS`   – number of LEDs **per strip**
-/// - `N_STRIPS` – must be 8 (kept as const for future flexibility)
 pub struct PioWs2812ParallelDriver<'d, P: Instance, const S: usize, const N_LEDS: usize> {
     dma: Channel<'d>,
     sm: StateMachine<'d, P, S>,
-    words: Vec<u8>,
-    dma_buf: Vec<u32>,
+    /// Double-buffered DMA payloads (packed bit-column words).
+    buf: [Vec<u32>; 2],
+    /// Index of the buffer *not* currently on the wire — the transpose
+    /// target and the next transfer to start.
+    next: usize,
+    /// False until the first `dma_push`: no previous transfer to wait on.
+    started: bool,
 }
 
 impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriver<'d, P, S, N_LEDS> {
     /// Configure the state machine for parallel 8-strip output.
     ///
-    /// `first_pin` must be the lowest-numbered of 8 **consecutive** GPIO pins.
+    /// `pin_0` must be the lowest-numbered of 8 **consecutive** GPIO pins.
     pub fn new<D: ChannelInstance>(
         pio: &mut Common<'d, P>,
         mut sm: StateMachine<'d, P, S>,
@@ -134,12 +146,7 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
         let p6 = pio.make_pio_pin(pin_6);
         let p7 = pio.make_pio_pin(pin_7);
 
-        // OUT PINS base = p0, count = 8.
-        // cfg.set_out_pins(&[&p0, &p1, &p2, &p3, &p4, &p5, &p6, &p7]);
-
-        // SET PINS same range (for the MOV pins trick).
-        // cfg.set_set_pins(&[&p0, &p1, &p2, &p3, &p4]);    // DOESN'T ALLOW MORE THAN 5 PINS!
-
+        // OUT and SET pin ranges both cover the 8 data pins.
         let pins = PinConfig {
             out_base: p0.pin(),
             out_count: 8,
@@ -157,12 +164,12 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
         let bit_freq = ws2812_freq * CYCLES_PER_BIT;
         cfg.clock_divider = clock_freq / bit_freq;
 
-        // Pull 8 bits at a time (one column of 8 strip-bits).
+        // One OSR word (4 columns of 8 strip-bits) per 4 OUTs, refilled
+        // without instruction cost — see the program comment above.
         cfg.fifo_join = FifoJoin::TxOnly;
         cfg.shift_out = ShiftConfig {
-            // auto_fill: true,
-            auto_fill: false,
-            threshold: 32, // ← 8 bits per OSR refill
+            auto_fill: true,
+            threshold: 32,
             direction: ShiftDirection::Left,
         };
 
@@ -173,65 +180,19 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
 
         sm.set_enable(true);
 
-        let n_words: usize = (BITS * N_LEDS + 3) / 4;
+        // BITS * N_LEDS is a multiple of 4 (24-bit pixels, u32 words).
+        let n_words: usize = BITS * N_LEDS / 4;
+        let buf_0 = alloc::vec![0u32; n_words];
+        let buf_1 = alloc::vec![0u32; n_words];
 
         Self {
             dma: embassy_rp::dma::Channel::new(dma, irq),
             sm,
-            words: alloc::vec![0u8; BITS * N_LEDS],
-            dma_buf: alloc::vec![0u32; n_words],
+            buf: [buf_0, buf_1],
+            next: 0,
+            started: false,
         }
     }
-
-    // /// Write one "frame" to all 8 strips simultaneously.
-    // ///
-    // /// `colors[strip][led]` — row = strip index (0-7), column = LED index.
-    // ///
-    // /// Internally this transposes the data into 24×N_LEDS columns of
-    // /// 8 bits and streams them to the PIO via DMA.
-    // pub async fn write_async(&mut self, colors: &[[RGB8; N_LEDS]; N_STRIPS]) {
-    //     // 24 bit-columns per LED × N_LEDS LEDs.
-    //     // Each column is one byte: bit[k] = bit value for strip k.
-
-    //     for led in 0..N_LEDS {
-    //         // Pack each strip's color into GRB order.
-    //         let grb: [u32; N_STRIPS] = core::array::from_fn(|strip| {
-    //             let c = colors[strip][led];
-    //             (u32::from(c.g) << 16) | (u32::from(c.r) << 8) | u32::from(c.b)
-    //         });
-
-    //         // Transpose: for each of the 24 bit positions (MSB first),
-    //         // collect one bit from each strip into a byte.
-    //         for bit in 0..BITS {
-    //             let shift = 23 - bit; // MSB first
-    //             let mut col: u8 = 0;
-    //             for strip in 0..N_STRIPS {
-    //                 if (grb[strip] >> shift) & 1 == 1 {
-    //                     col |= 1 << strip;
-    //                 }
-    //             }
-    //             self.words[led * BITS + bit] = col;
-    //         }
-    //     }
-
-    //     // The PIO consumes 8-bit chunks; DMA expects u32 words, so we
-    //     // reinterpret the byte slice as a u32 slice (packed, BE within
-    //     // each word — Left-shift drain order takes care of the rest).
-    //     // Easiest: cast to &[u32] by chunking 4 bytes → 1 word.
-    //     for (i, chunk) in self.words.chunks(4).enumerate() {
-    //         let mut w = 0u32;
-    //         for (j, &b) in chunk.iter().enumerate() {
-    //             w |= (b as u32) << (24 - j * 8);
-    //         }
-    //         self.dma_buf[i] = w;
-    //     }
-
-    //     info!("self.dma_buf: {}", self.dma_buf.len());
-
-    //     self.sm.tx().dma_push(&mut self.dma, &self.dma_buf, false).await;
-
-    //     Timer::after_micros(55).await;
-    // }
 }
 
 impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs2812ParallelDriver<'_, P, 0, N_LEDS> {
@@ -244,85 +205,65 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
             crate::tasks::usb_dbg::log(format_args!("disp: write #1 begin"));
         }
 
-        // --- Phase 1: Transpose colors into bit-columns ---
-        // Unroll the bit loop entirely for the common N_STRIPS <= 8 case.
-        // Precompute GRB for all strips of the current LED in registers,
-        // then use bitwise tricks to transpose without branching.
-
-        let words = &mut self.words;
+        // --- Transpose into the idle DMA buffer ---
+        // Runs while the previous frame is still streaming, so this costs
+        // wire time only when it exceeds the remaining transfer (torn
+        // frame, see the type docs). One pass: four bit-columns are packed
+        // into one big-endian u32 as they are produced — the old `words`
+        // byte staging plus a separate pack pass is gone. Bit k of byte b
+        // of word (led, w) is strip k's bit (23 - (4w + b)) of that LED,
+        // MSB first, matching the left-shifting OSR.
+        let words = &mut self.buf[self.next];
 
         for led in 0..N_LEDS {
-            // Load all strips' GRB values. With N_STRIPS small and fixed at
-            // compile time, this array lives entirely in registers.
+            // Load all strips' GRB values. With N_STRIPS fixed at 8 the
+            // compiler keeps this array in registers.
             let mut grb = [0u32; N_STRIPS];
             for strip in 0..N_STRIPS {
                 let c = colors[strip][led];
-                // Avoid three separate shifts by packing directly.
                 grb[strip] = ((c.g as u32) << 16) | ((c.r as u32) << 8) | (c.b as u32);
             }
 
-            // Transpose 24 bits × N_STRIPS into 24 byte columns.
-            // Pull the base pointer out of the loop to help the compiler
-            // avoid recomputing it each iteration.
-            let base = led * BITS;
-            for bit in 0..BITS {
-                // Single shift per strip: mask the relevant bit plane.
-                let shift = 23 - bit;
-                let mut col: u8 = 0;
-                // This inner loop is the hot path. With N_STRIPS = 8 and a
-                // fixed shift the compiler (LLVM) can unroll and vectorize it
-                // into a handful of UBFX / ORR instructions on Cortex-M33.
-                for strip in 0..N_STRIPS {
-                    // Cast to u8 after isolating the bit, avoiding a wide OR.
-                    col |= (((grb[strip] >> shift) as u8) & 1) << strip;
+            let base = led * (BITS / 4);
+            for w in 0..(BITS / 4) {
+                let mut out: u32 = 0;
+                for b in 0..4 {
+                    let shift = 23 - (w * 4 + b);
+                    let mut col: u8 = 0;
+                    for strip in 0..N_STRIPS {
+                        col |= (((grb[strip] >> shift) as u8) & 1) << strip;
+                    }
+                    out |= (col as u32) << (24 - b * 8);
                 }
-                // SAFETY-note: base + bit is always in-bounds by construction.
-                words[base + bit] = col;
+                words[base + w] = out;
             }
         }
 
-        // --- Phase 2: Pack bytes into big-endian u32 words for DMA ---
-        // Replace the chunks() iterator + inner loop with direct index
-        // arithmetic. chunks() cannot communicate its stride to the
-        // optimiser as cleanly as a plain index expression, so the compiler
-        // can miss the opportunity to use LDM / LDRD on M33.
-        //
-        // N_LEDS * BITS must be a multiple of 4 (guaranteed by construction:
-        // BITS = 24 and N_LEDS are both powers of two / multiples of four).
-        debug_assert_eq!(words.len() % 4, 0);
-
-        let dma_buf = &mut self.dma_buf;
-        let n = words.len() / 4;
-        for i in 0..n {
-            let j = i * 4;
-            // Four byte-loads + three shifts + three ORs — the compiler will
-            // schedule these as a single LDR + ROR sequence on M33 when the
-            // source slice is 4-byte aligned (which it is, being a &[u8]
-            // field in a #[repr(C)] struct).
-            dma_buf[i] = ((words[j] as u32) << 24)
-                | ((words[j + 1] as u32) << 16)
-                | ((words[j + 2] as u32) << 8)
-                | (words[j + 3] as u32);
+        // --- Hand over the wire to this frame ---
+        if self.started {
+            // `Transfer`'s waker plumbing is crate-private, so completion
+            // is a busy poll. The transfer is normally long done by the
+            // time the transpose finishes; the loop then costs one read.
+            while self.dma.regs().ctrl_trig().read().busy() {
+                embassy_time::Timer::after_micros(DMA_POLL_US).await;
+            }
+            // Pins have been low since the last bit; add explicit latch
+            // margin on top of the DMA-poll overshoot.
+            embassy_time::Timer::after_micros(LATCH_US).await;
         }
 
-        // // --- Phase 3: Push words to PIO TX FIFO ---
-        // // Use try_write in a spin loop rather than checking full() then
-        // // pushing separately; the two-instruction sequence is atomic on M33
-        // // (no IRQ can land between them without losing data if PIO is fast),
-        // // but the single-call form is cleaner and some HALs optimise it better.
-        // for &word in self.dma_buf.iter() {
-        //     while !self.sm.tx().try_write(word) {}
-        // }
+        // `dma_push` arms the channel (EN=true) inside `configure()` — the
+        // transfer is live when the call returns, and the returned
+        // `Transfer` future only polls the busy bit. Forget it deliberately:
+        // dropping it runs the channel-abort path and kills the frame we
+        // just started. Completion is detected by the busy poll above.
+        core::mem::forget(self.sm.tx().dma_push(&mut self.dma, &self.buf[self.next], false));
 
-        // for b in &self.dma_buf {
-        //     while self.sm.tx().full() {}
-        //     self.sm.tx().push(*b);
-        // }
-
-        self.sm.tx().dma_push(&mut self.dma, &self.dma_buf, false).await;
+        self.started = true;
+        self.next ^= 1;
 
         if frame < 3 || (frame + 1) % 1000 == 0 {
-            crate::tasks::usb_dbg::log(format_args!("disp: write #{} done", frame + 1));
+            crate::tasks::usb_dbg::log(format_args!("disp: write #{} started", frame + 1));
         }
     }
 }

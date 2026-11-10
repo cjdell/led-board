@@ -1,16 +1,10 @@
-use animations::{
-    AnimationEnum, AnimationFader, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS,
-    apply_power_limit,
-};
+use animations::{AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, TOTAL_PIXELS};
 use embedded_graphics::{
     draw_target::DrawTarget,
     pixelcolor::{IntoStorage, Rgb888, RgbColor as _},
 };
-use minifb::{
-    Key::{self, M},
-    Scale, Window, WindowOptions,
-};
-use sim::sim_screen::{HEIGHT, SimScreen, WIDTH};
+use minifb::{Key, Scale, Window, WindowOptions};
+use sim::sim_screen::{HEIGHT, WIDTH};
 use std::{
     f32::consts::PI,
     thread::sleep,
@@ -30,7 +24,7 @@ fn main() {
     let mut buffer_2 = BufferTarget::new();
 
     let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
-    let mut start_time = time::SystemTime::now();
+    let start_time = time::SystemTime::now();
     let mut last_time = time::SystemTime::now();
 
     let mut last_generate_time = 1_000u32;
@@ -98,7 +92,7 @@ fn main() {
 
                 runner.set_suspend(3_000);
 
-                buffer_1.clear(Rgb888::YELLOW);
+                let _ = buffer_1.clear(Rgb888::YELLOW);
             }
 
             if window.is_key_down(Key::P) {
@@ -125,11 +119,5 @@ fn main() {
         println!("Stats: {:?}, Delta: {}", runner.stats(), delta_ms);
 
         last_generate_time += delta_ms;
-    }
-}
-
-fn set_pixel(buffer: &mut Vec<u32>, x: usize, y: usize, color: u32) {
-    if x < WIDTH && y < HEIGHT {
-        buffer[y * WIDTH + x] = color;
     }
 }
