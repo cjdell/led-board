@@ -13,7 +13,6 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@components": "/src/components",
       "@lib": "/src/lib",
     },
   },

@@ -1,157 +1,231 @@
-import { RouteSectionProps } from "@solidjs/router";
-import { createSignal, onMount } from "solid-js";
-import { GlobalDeviceApi, sleep } from "@lib";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { boardStatus, GlobalDeviceApi, toast } from "@lib";
+import { Body, Panel, PanelHeader, Spacer } from "../components/Panel.tsx";
+import { Button } from "../components/Button.tsx";
 
 const Width = 60;
 const Height = 40;
 
-export function GridRoute(props: RouteSectionProps) {
+const PALETTE: [number, number, number][] = [
+  [255, 255, 255],
+  [255, 60, 40],
+  [255, 140, 20],
+  [255, 210, 60],
+  [60, 255, 110],
+  [40, 230, 230],
+  [60, 130, 255],
+  [190, 90, 255],
+  [255, 90, 200],
+  [0, 0, 0],
+];
+
+export function GridRoute() {
   const api = GlobalDeviceApi;
+  const streaming = () => boardStatus()?.streaming ?? false;
 
-  const [colour, setColour] = createSignal([255, 0, 0]); // Default red
-  const buffer = new Uint8Array(Width * Height * 3); // Default black
+  const [colour, setColour] = createSignal<[number, number, number]>([255, 180, 84]);
+  const [eraser, setEraser] = createSignal(false);
+  const [mirror, setMirror] = createSignal(true);
 
-  let canvas: HTMLCanvasElement | undefined;
+  const buffer = new Uint8Array(Width * Height * 3); // black
 
-  // Track if we're currently drawing
-  let isDrawing = false;
+  let canvas!: HTMLCanvasElement;
+  let painting = false;
+  let lastSend = 0;
+  let sendTimer: ReturnType<typeof setTimeout> | null = null;
+  let sendFailed = false;
 
-  // Initialize buffer to black (already is, but explicit)
-  onMount(() => {
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    drawGrid(ctx, buffer, Width, Height);
+  onMount(() => redraw());
+  onCleanup(() => {
+    if (sendTimer) clearTimeout(sendTimer);
   });
 
-  const handleCanvasDown = async (e: MouseEvent | TouchEvent) => {
-    e.preventDefault(); // Prevent default scrolling on touch
+  const px = (x: number, y: number, r: number, g: number, b: number) => {
+    if (x < 0 || x >= Width || y < 0 || y >= Height) return;
 
-    await sleep(0); // Allow colour picker to change first
+    const i = (y * Width + x) * 3;
 
-    isDrawing = true;
-    handlePixelSet(e);
+    buffer[i] = r;
+    buffer[i + 1] = g;
+    buffer[i + 2] = b;
   };
 
-  const handleCanvasMove = (e: MouseEvent | TouchEvent) => {
-    if (!isDrawing) return;
-    e.preventDefault();
-    handlePixelSet(e);
-  };
-
-  const handleCanvasUp = () => {
-    isDrawing = false;
-
-    (async () => {
-      try {
-        await api.sendBinary(buffer);
-      } catch (err) {
-        console.error("sendBinary: Error:", err);
-      }
-    })();
-  };
-
-  const handleCanvasLeave = () => {
-    isDrawing = false;
-  };
-
-  // Shared logic for setting pixel on mouse/touch event
-  const handlePixelSet = (e: MouseEvent | TouchEvent) => {
-    if (!canvas) return;
-
+  const paintAt = (clientX: number, clientY: number) => {
     const rect = canvas.getBoundingClientRect();
-    const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
-    const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
-
     const x = Math.floor(((clientX - rect.left) / rect.width) * Width);
     const y = Math.floor(((clientY - rect.top) / rect.height) * Height);
 
-    // Bounds check
     if (x < 0 || x >= Width || y < 0 || y >= Height) return;
 
-    const index = (y * Width + x) * 3;
-    const [r, g, b] = colour();
+    const [r, g, b] = eraser() ? [0, 0, 0] : colour();
 
-    // Set pixel to current color (no toggle — always paint)
-    buffer[index + 0] = r;
-    buffer[index + 1] = g;
-    buffer[index + 2] = b;
+    px(x, y, r, g, b);
 
-    // Redraw only this pixel (more efficient than full redraw)
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      const cellWidth = canvas.width / Width;
-      const cellHeight = canvas.height / Height;
-      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-      ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
-      ctx.strokeStyle = "#333";
-      ctx.lineWidth = 0.5;
-      ctx.strokeRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
-    }
+    if (mirror()) px(Width - 1 - x, y, r, g, b);
+
+    redrawPixel(x, y);
+    if (mirror()) redrawPixel(Width - 1 - x, y);
   };
 
-  // Full grid redraw helper (used on init and for reset)
-  const drawGrid = (ctx: CanvasRenderingContext2D, buf: Uint8Array, w: number, h: number) => {
-    ctx.clearRect(0, 0, canvas!.width, canvas!.height);
+  const send = (throttled: boolean) => {
+    if (throttled) {
+      const now = Date.now();
 
-    const cellWidth = canvas!.width / w;
-    const cellHeight = canvas!.height / h;
+      if (now - lastSend < 90) {
+        // Coalesce — one trailing send covers the final strokes.
+        if (sendTimer === null) {
+          sendTimer = setTimeout(() => {
+            sendTimer = null;
+            send(true);
+          }, 90);
+        }
 
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const index = (y * w + x) * 3;
-        const r = buf[index];
-        const g = buf[index + 1];
-        const b = buf[index + 2];
+        return;
+      }
 
-        ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-        ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+      lastSend = now;
+    }
 
-        // Draw grid lines
-        ctx.strokeStyle = "#333";
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+    api
+      .sendBinary(buffer)
+      .then(() => {
+        sendFailed = false;
+      })
+      .catch(() => {
+        if (!sendFailed) {
+          sendFailed = true;
+          toast("Board offline — pixels stay on this page", "error");
+        }
+      });
+  };
+
+  const onDown = (e: PointerEvent) => {
+    e.preventDefault();
+    canvas.setPointerCapture?.(e.pointerId);
+    painting = true;
+    sendFailed = false;
+    paintAt(e.clientX, e.clientY);
+    send(true);
+  };
+
+  const onMove = (e: PointerEvent) => {
+    if (!painting) return;
+
+    paintAt(e.clientX, e.clientY);
+    send(true);
+  };
+
+  const onUp = () => {
+    if (!painting) return;
+
+    painting = false;
+    send(false);
+  };
+
+  const redraw = () => {
+    for (let y = 0; y < Height; y++) {
+      for (let x = 0; x < Width; x++) {
+        redrawPixel(x, y);
       }
     }
   };
 
-  const currentColour = () => {
-    return `#${colour()[0].toString(16).padStart(2, "0")}${colour()[1].toString(16).padStart(2, "0")}${
-      colour()[2].toString(16).padStart(2, "0")
+  const redrawPixel = (x: number, y: number) => {
+    const ctx = canvas.getContext("2d")!;
+    const cell = canvas.width / Width;
+    const i = (y * Width + x) * 3;
+
+    ctx.fillStyle = `rgb(${buffer[i]},${buffer[i + 1]},${buffer[i + 2]})`;
+    ctx.fillRect(x * cell, y * cell, cell, cell);
+
+    ctx.strokeStyle = "rgba(40,52,74,0.5)";
+    ctx.lineWidth = 0.6;
+    ctx.strokeRect(x * cell + 0.5, y * cell + 0.5, cell - 1, cell - 1);
+  };
+
+  const clear = () => {
+    buffer.fill(0);
+    redraw();
+    send(false);
+  };
+
+  const currentHex = () =>
+    `#${
+      colour()
+        .map((c) => c.toString(16).padStart(2, "0"))
+        .join("")
     }`;
-  };
-
-  const onChangeColour = (colour: string) => {
-    if (typeof colour !== "string" || colour[0] !== "#") return;
-
-    setColour([
-      parseInt(colour.substring(1, 3), 16),
-      parseInt(colour.substring(3, 5), 16),
-      parseInt(colour.substring(5, 7), 16),
-    ]);
-  };
-
-  console.log("currentColour", currentColour());
 
   return (
-    <div class="grid">
-      <div class="g-col-12 d-flex flex-column gap-2">
-        <input style={{ height: "32px" }} type="color" value={currentColour()} on:change={(e) => onChangeColour(e.currentTarget.value)} />
+    <div class="page">
+      <Panel accent="cyan">
+        <PanelHeader>
+          Pixel painter
+          <Spacer />
+          <Show when={streaming()}>
+            <span class="chip chip--cyan">streaming to the board</span>
+          </Show>
+          <Button variant="ghost" click={() => api.send("ResumeNow").catch(() => {})}>
+            ↩ Back to playlist
+          </Button>
+        </PanelHeader>
+        <Body>
+          <div class="painter">
+            <div class="swatches">
+              <div class="swatches__colours">
+                <input
+                  type="color"
+                  value={currentHex()}
+                  onInput={(e) => {
+                    const hex = e.currentTarget.value;
 
-        <canvas
-          ref={(c) => (canvas = c)}
-          width={Width * 10} // 10px per cell → 600x400 canvas
-          height={Height * 10}
-          style="image-rendering: pixelated; border: 1px solid #ccc; cursor: crosshair; touch-action: none;"
-          onMouseDown={handleCanvasDown}
-          onMouseMove={handleCanvasMove}
-          onMouseUp={handleCanvasUp}
-          onMouseLeave={handleCanvasLeave}
-          onTouchStart={handleCanvasDown}
-          onTouchMove={handleCanvasMove}
-          onTouchEnd={handleCanvasUp}
-        />
-      </div>
+                    setColour([parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
+                    setEraser(false);
+                  }}
+                />
+                {PALETTE.map(([r, g, b]) => (
+                  <button
+                    class={!eraser() && colour()[0] === r && colour()[1] === g && colour()[2] === b ? "selected" : ""}
+                    style={{ background: `rgb(${r},${g},${b})` }}
+                    title={`rgb(${r},${g},${b})`}
+                    onClick={() => {
+                      setColour([r, g, b]);
+                      setEraser(false);
+                    }}
+                  />
+                ))}
+              </div>
+
+              <div class="swatches__tools">
+                <Button on={eraser()} variant="default" click={() => setEraser(!eraser())}>
+                  Eraser
+                </Button>
+                <Button on={mirror()} variant="default" title="Paint both halves at once" click={() => setMirror(!mirror())}>
+                  Mirror
+                </Button>
+                <Button variant="danger" click={clear}>
+                  Clear
+                </Button>
+              </div>
+            </div>
+
+            <canvas
+              ref={canvas}
+              width={Width * 10}
+              height={Height * 10}
+              onPointerDown={onDown}
+              onPointerMove={onMove}
+              onPointerUp={onUp}
+              onPointerLeave={onUp}
+              onPointerCancel={onUp}
+            />
+
+            <p class="hint">
+              Painting takes over the panel; the playlist resumes automatically ~10&nbsp;s after you stop (or use “Back to playlist”).
+            </p>
+          </div>
+        </Body>
+      </Panel>
     </div>
   );
 }

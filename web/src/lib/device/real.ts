@@ -1,16 +1,21 @@
-import { sleep } from "@lib";
 import * as v from "valibot";
+import { sleep } from "@lib";
 import {
   Animation,
   AnimationSchema,
+  BoardStatus,
+  BoardStatusSchema,
   DeviceApi,
   DeviceConfig,
   DeviceConfigSchema,
-  DeviceFile,
+  DeviceEvents,
   DeviceMessage,
-  FrameBufferListener,
-  Playlist,
-  PlaylistSchema,
+  PlaylistEntry,
+  PlaylistEntrySchema,
+  PlaylistInfo,
+  PlaylistInfoSchema,
+  PlaylistItem,
+  PlaylistItemSchema,
   WifiJoinResult,
   WifiJoinResultSchema,
   WifiJoinStatus,
@@ -21,13 +26,20 @@ import {
   WifiResultSchema,
 } from "./common.ts";
 
+const PING_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 4_000;
+
 export class RealDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
 
-  private readonly baseUrl;
+  private readonly baseUrl: string;
   private ws: WebSocket | null = null;
+  private wsOpen = false;
+  private closed = false;
+  private reconnectDelay = 500;
 
-  private frameBufferListener: FrameBufferListener | null = null;
+  private readonly listeners = new Set<(event: DeviceEvents) => void>();
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(host = "") {
     this.baseUrl = `${host}/api/`;
@@ -35,174 +47,250 @@ export class RealDeviceApi implements DeviceApi {
     this.connectWebSocket();
   }
 
+  // ── live feed ────────────────────────────────────────────────────────────
+
+  public subscribe(handler: (event: DeviceEvents) => void): () => void {
+    this.listeners.add(handler);
+
+    // Late subscribers still get the current state promptly.
+    if (this.wsOpen) {
+      this.getBoardStatus().then((status) => this.emit({ status }), () => {});
+    }
+
+    return () => this.listeners.delete(handler);
+  }
+
+  private emit(event: DeviceEvents) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error("status listener:", err);
+      }
+    }
+  }
+
   private connectWebSocket() {
     const connect = () => {
-      this.ws = new WebSocket(`${this.baseUrl}ws`, ["json"]);
+      if (this.closed) return;
 
-      this.ws.addEventListener("close", connect);
+      let ws: WebSocket;
 
-      this.ws.addEventListener("message", async (e) => {
-        if (this.frameBufferListener && e.data instanceof Blob) {
-          const bits = new Uint8Array(await e.data.arrayBuffer());
+      try {
+        ws = new WebSocket(`${this.baseUrl}ws`, ["json"]);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
 
-          const pixels = new Uint16Array(bits.length * 8);
+      this.ws = ws;
 
-          for (let p = 0; p < pixels.length; p += 1) {
-            pixels[p] = bits[(p / 8) | 0] & (1 << p % 8) ? 0xffff : 0x0000;
-          }
+      ws.onopen = () => {
+        this.wsOpen = true;
+        this.reconnectDelay = 500;
+        this.stopPolling();
+        this.emit({ connected: true });
+      };
 
-          this.frameBufferListener(new Uint8Array(pixels.buffer));
+      ws.onmessage = (e) => {
+        if (typeof e.data !== "string") return;
+
+        let msg: { status?: unknown; playlist?: unknown };
+
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return;
         }
-      });
+
+        if (msg.status !== undefined) {
+          try {
+            this.emit({ status: v.parse(BoardStatusSchema, msg.status) });
+          } catch (err) {
+            console.warn("bad status frame:", err);
+          }
+        }
+
+        if (msg.playlist !== undefined) {
+          try {
+            this.emit({ playlist: v.parse(PlaylistInfoSchema, msg.playlist) });
+          } catch (err) {
+            console.warn("bad playlist frame:", err);
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        if (this.ws !== ws) return;
+
+        this.ws = null;
+        this.wsOpen = false;
+        this.emit({ connected: false });
+
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        // onclose follows on every platform; the reconnect lives there.
+      };
+    };
+
+    const scheduleReconnect = () => {
+      if (this.closed) return;
+
+      const delay = this.reconnectDelay;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 1.8, 15_000);
+
+      setTimeout(connect, delay);
+      this.startPolling();
     };
 
     connect();
+
+    // Keep-alive + activity pings for the board's idle logic.
+    setInterval(() => {
+      if (this.wsOpen) this.ws?.send(JSON.stringify("Ping" satisfies DeviceMessage));
+    }, PING_INTERVAL_MS);
   }
 
-  public onFrameBuffer(handler: FrameBufferListener) {
-    this.frameBufferListener = handler;
+  /// While the socket is down, keep the UI honest with plain GETs — a radio
+  /// board behind the C3 relay drops WebSockets routinely, status shouldn't.
+  private startPolling() {
+    if (this.pollTimer !== null) return;
+
+    const poll = async () => {
+      if (this.wsOpen || this.closed) return this.stopPolling();
+
+      try {
+        const status = await this.getBoardStatus();
+        this.emit({ status });
+      } catch {
+        // Board is truly unreachable — the top bar dot says it.
+      }
+    };
+
+    poll();
+    this.pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling() {
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
+
+  // ── REST ─────────────────────────────────────────────────────────────────
+
+  private async fetch(path: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(`${this.baseUrl}${path}`, init);
+
+    if (res.status !== 200) {
+      throw new Error((await res.text().catch(() => "")).trim() || `HTTP ${res.status}`);
+    }
+
+    return res;
+  }
+
+  public async getBoardStatus(): Promise<BoardStatus> {
+    return v.parse(BoardStatusSchema, await (await this.fetch("status")).json());
   }
 
   public async getDeviceConfig(): Promise<DeviceConfig> {
-    const res = await fetch(`${this.baseUrl}config`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(DeviceConfigSchema, await res.json());
+    return v.parse(DeviceConfigSchema, await (await this.fetch("config")).json());
   }
 
   public async saveDeviceConfig(config: DeviceConfig) {
-    const json = JSON.stringify(config);
-    const res = await fetch(`${this.baseUrl}config`, {
+    await this.fetch("config", {
       method: "POST",
       headers: [["Content-Type", "application/json"]],
-      body: json,
+      body: JSON.stringify(config),
     });
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
   }
 
   public async reboot() {
-    await fetch(`${this.baseUrl}reboot`, { method: "POST" });
+    await this.fetch("reboot", { method: "POST" });
   }
 
   public async scanWifiNetworks(): Promise<readonly WifiResult[]> {
-    const res = await fetch(`${this.baseUrl}wifi`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(v.array(WifiResultSchema), await res.json());
+    return v.parse(v.array(WifiResultSchema), await (await this.fetch("wifi")).json());
   }
 
   public async joinWifiNetwork(ssid: string, pass: string): Promise<WifiJoinResult> {
-    const res = await fetch(`${this.baseUrl}wifi`, {
+    const res = await this.fetch("wifi", {
       method: "POST",
       headers: [["Content-Type", "application/json"]],
       body: JSON.stringify({ ssid, pass }),
     });
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
+
     return v.parse(WifiJoinResultSchema, await res.json().catch(() => ({})));
   }
 
   public async getWifiNetworks(): Promise<WifiNetworksResult> {
-    const res = await fetch(`${this.baseUrl}networks`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(WifiNetworksResultSchema, await res.json());
+    return v.parse(WifiNetworksResultSchema, await (await this.fetch("networks")).json());
   }
 
   public async forgetWifiNetwork(ssid: string): Promise<void> {
-    const res = await fetch(`${this.baseUrl}forget`, {
+    await this.fetch("forget", {
       method: "POST",
       headers: [["Content-Type", "application/json"]],
       body: JSON.stringify({ ssid }),
     });
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
   }
 
   public async getWifiJoinStatus(): Promise<WifiJoinStatus> {
-    const res = await fetch(`${this.baseUrl}join-status`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(WifiJoinStatusSchema, await res.json());
-  }
-
-  public async sendMessage(message: DeviceMessage) {
-    while (this.ws?.readyState !== WebSocket.OPEN) {
-      await sleep(1000);
-      console.warn("Waiting for WebSocket...", this.ws);
-    }
-
-    this.ws.send(JSON.stringify(message));
-  }
-
-  public async sendBinary(buffer: Uint8Array<ArrayBuffer>) {
-    while (this.ws?.readyState !== WebSocket.OPEN) {
-      await sleep(1000);
-      console.warn("Waiting for WebSocket...", this.ws);
-    }
-
-    this.ws.send(buffer);
-  }
-
-  public async sendFile(bytes: Uint8Array<ArrayBuffer>) {
-    await fetch(`${this.baseUrl}receive`, {
-      method: "POST",
-      headers: [["Content-Type", "application/octet-stream"]],
-      body: bytes,
-    });
+    return v.parse(WifiJoinStatusSchema, await (await this.fetch("join-status")).json());
   }
 
   public async getAnimationList(): Promise<Animation[]> {
-    const res = await fetch(`${this.baseUrl}info/animations`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(v.array(AnimationSchema), await res.json());
+    return v.parse(v.array(AnimationSchema), await (await this.fetch("info/animations")).json());
   }
 
-  public async getPlaylist(): Promise<Playlist> {
-    const res = await fetch(`${this.baseUrl}info/playlist`);
-    if (res.status !== 200) {
-      throw new Error(await res.text());
-    }
-    return v.parse(PlaylistSchema, await res.json());
+  public async getPlaylistInfo(): Promise<PlaylistInfo> {
+    return v.parse(PlaylistInfoSchema, await (await this.fetch("info/playlist")).json());
   }
 
-  public async listFiles(): Promise<readonly DeviceFile[]> {
-    const res = await fetch(`${this.baseUrl}files`);
-    const json = await res.text();
-    return JSON.parse(json);
+  // ── playlist library ─────────────────────────────────────────────────────
+
+  public async listPlaylists(): Promise<PlaylistEntry[]> {
+    return v.parse(v.array(PlaylistEntrySchema), await (await this.fetch("playlists")).json());
   }
 
-  public async readFile(filename: string): Promise<Uint8Array> {
-    const res = await fetch(`${this.baseUrl}file?file=${encodeURIComponent(filename)}`);
-    return new Uint8Array(await res.arrayBuffer());
+  public async fetchPlaylist(name: string): Promise<PlaylistItem[]> {
+    const res = await this.fetch(`playlists?name=${encodeURIComponent(name)}`);
+
+    return v.parse(v.array(PlaylistItemSchema), await res.json());
   }
 
-  public async writeFile(filename: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
-    // We can only accept 8.3 filenames.
-    let [name, ext] = filename.split(".");
-    if (ext === "wasm") ext = "wsm";
-    name = name.substring(0, 8);
-    ext = ext.substring(0, 3);
-    filename = [name, ext].join(".");
-
-    await fetch(`${this.baseUrl}file?file=${encodeURIComponent(filename)}`, {
+  public async putPlaylist(name: string, items: PlaylistItem[]): Promise<void> {
+    await this.fetch(`playlists?name=${encodeURIComponent(name)}`, {
       method: "POST",
-      headers: [["Content-Type", "application/octet-stream"]],
-      body: bytes,
+      headers: [["Content-Type", "application/json"]],
+      body: JSON.stringify(items),
     });
   }
 
-  public async deleteFile(filename: string): Promise<void> {
-    await fetch(`${this.baseUrl}file?file=${encodeURIComponent(filename)}`, { method: "DELETE" });
+  public async deletePlaylist(name: string): Promise<void> {
+    await this.fetch(`playlists?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+  }
+
+  // ── WebSocket send ───────────────────────────────────────────────────────
+
+  private async waitForSocket(): Promise<WebSocket> {
+    for (let waited = 0; waited < 20_000; waited += 250) {
+      if (this.wsOpen && this.ws) return this.ws;
+
+      await sleep(250);
+    }
+
+    throw new Error("Board not reachable — changes not applied");
+  }
+
+  public async send(message: DeviceMessage) {
+    (await this.waitForSocket()).send(JSON.stringify(message));
+  }
+
+  public async sendBinary(buffer: Uint8Array<ArrayBuffer>) {
+    (await this.waitForSocket()).send(buffer);
   }
 }

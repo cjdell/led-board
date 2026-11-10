@@ -1,19 +1,65 @@
-import { DeviceFileSchema } from "@lib";
-import * as v from "valibot";
 import {
   Animation,
+  animationKind,
+  BoardStatus,
   DeviceApi,
   DeviceConfig,
   DeviceConfigSchema,
-  DeviceFile,
+  DeviceEvents,
   DeviceMessage,
-  FrameBufferListener,
-  Playlist,
+  PlaylistEntry,
+  PlaylistInfo,
+  PlaylistItem,
   WifiJoinResult,
   WifiJoinStatus,
   WifiNetworksResult,
   WifiResult,
 } from "./common.ts";
+
+/// The simulator's built-in festival loop, mirrored so the demo page
+/// (demo.rustagon.chrisdell.info / vite dev) behaves like a real board.
+const FESTIVAL: PlaylistItem[] = [
+  { animation: { ScrollingMessage: "Light Up Leigh with Leigh Hackspace" }, duration_ms: 14_000, label: "Banner" },
+  { animation: { CenteredTitle: ["Natures", "Magic"] }, duration_ms: 5_000 },
+  { animation: "FallingLeaves", duration_ms: 18_000, label: "Section 1 · Leaves" },
+  { animation: "Fireflies", duration_ms: 20_000, label: "Section 1 · Fireflies" },
+  { animation: { CenteredTitle: ["Awe and", "Wonder"] }, duration_ms: 5_000 },
+  { animation: "Starfield", duration_ms: 18_000, label: "Section 2 · Stars" },
+  { animation: "Snowfall", duration_ms: 20_000, label: "Section 2 · Snow" },
+  { animation: { CenteredTitle: ["Northern", "Lights"] }, duration_ms: 5_000 },
+  { animation: "Aurora", duration_ms: 30_000, label: "Section 3 · Aurora" },
+  { animation: "Starfield", duration_ms: 14_000 },
+  { animation: "VinylSpin", duration_ms: 16_000 },
+  { animation: { CenteredTitle: ["Heritage", "in Motion"] }, duration_ms: 5_000 },
+  { animation: "CanalBoats", duration_ms: 24_000, label: "Section 4 · Canal" },
+  { animation: "Fireflies", duration_ms: 16_000 },
+  { animation: { CenteredTitle: ["Leigh", "Hackspace"] }, duration_ms: 6_000 },
+  { animation: { ScrollingMessage: "Light Up Leigh with Leigh Hackspace" }, duration_ms: 14_000, label: "Banner" },
+];
+
+const LIBRARY: { name: string; items: PlaylistItem[] }[] = [
+  {
+    name: "Parade Warmup",
+    items: [
+      { animation: "RainbowWheel", duration_ms: 15_000 },
+      { animation: "SynthWave", duration_ms: 20_000 },
+    ],
+  },
+];
+
+function titleOf(item: PlaylistItem): string {
+  if (item.label) return item.label;
+
+  const kind = animationKind(item.animation);
+
+  if (typeof item.animation === "string") return kind;
+
+  const params = Object.values(item.animation)[0];
+
+  if (Array.isArray(params)) return `${kind}: ${params.map(String).join(" ")}`;
+
+  return kind;
+}
 
 export class DummyDeviceApi implements DeviceApi {
   public schema = DeviceConfigSchema;
@@ -21,14 +67,102 @@ export class DummyDeviceApi implements DeviceApi {
   private networks: { ssid: string; pass: string }[] = [{ ssid: "cccc", pass: "dddd" }];
   private joinStatus: WifiJoinStatus = { attempts: 0, last_error: null, joined_ssid: "cccc", ip: "192.168.0.50", ap_fallback: false };
 
-  public onFrameBuffer(handler: FrameBufferListener) {
-    //
+  private playlist: PlaylistItem[] = [...FESTIVAL];
+  private source: PlaylistInfo["source"] = "Default";
+  private index = 0;
+  private elapsed = 0;
+  private paused = false;
+  private powerPct = 60;
+  private override: { animation: Animation; duration_ms: number; elapsed: number } | null = null;
+  private startedAt = Date.now();
+
+  private listeners = new Set<(e: DeviceEvents) => void>();
+
+  constructor() {
+    setInterval(() => this.tick(), 1_000);
+    setTimeout(() => this.emit({ connected: true }), 300);
+  }
+
+  private tick() {
+    if (this.override) {
+      this.override.elapsed += 1_000;
+
+      if (this.override.elapsed > this.override.duration_ms) this.override = null;
+    } else if (!this.paused && this.playlist.length > 0) {
+      this.elapsed += 1_000;
+
+      if (this.elapsed > this.playlist[this.index].duration_ms) {
+        this.index = (this.index + 1) % this.playlist.length;
+        this.elapsed = 0;
+      }
+    }
+
+    this.emit({ status: this.status(), playlist: this.playlistInfo() });
+  }
+
+  private status(): BoardStatus {
+    const item = this.playlist[Math.min(this.index, this.playlist.length - 1)];
+
+    const playing = this.override
+      ? {
+        kind: animationKind(this.override.animation),
+        title: animationKind(this.override.animation),
+        animation: this.override.animation,
+        elapsed_ms: this.override.elapsed,
+        duration_ms: this.override.duration_ms,
+      }
+      : item
+      ? {
+        kind: animationKind(item.animation),
+        title: titleOf(item),
+        animation: item.animation,
+        elapsed_ms: this.elapsed,
+        duration_ms: item.duration_ms,
+      }
+      : { kind: "Blank", title: "—", animation: "Blank" as Animation, elapsed_ms: 0, duration_ms: 0 };
+
+    return {
+      now_playing: playing,
+      playlist_index: this.index,
+      playlist_len: this.playlist.length,
+      paused: this.paused,
+      streaming: false,
+      status_screen: false,
+      power_limit_pct: this.powerPct,
+      uptime_s: Math.floor((Date.now() - this.startedAt) / 1000),
+    };
+  }
+
+  private playlistInfo(): PlaylistInfo {
+    return { playlist: [...this.playlist], source: this.source, index: this.index };
+  }
+
+  private emit(event: DeviceEvents) {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error("listener:", err);
+      }
+    }
+  }
+
+  public subscribe(handler: (e: DeviceEvents) => void): () => void {
+    this.listeners.add(handler);
+
+    setTimeout(() => handler({ status: this.status(), playlist: this.playlistInfo() }), 0);
+
+    return () => this.listeners.delete(handler);
+  }
+
+  public async getBoardStatus() {
+    return this.status();
   }
 
   public async getDeviceConfig(): Promise<DeviceConfig> {
     return {
       wifi_mode: "AccessPoint",
-      ap_ssid: "aaaa",
+      ap_ssid: "LED Board (demo)",
       known_wifi_networks: [...this.networks],
     };
   }
@@ -43,34 +177,20 @@ export class DummyDeviceApi implements DeviceApi {
 
   public async scanWifiNetworks(): Promise<readonly WifiResult[]> {
     return [
-      {
-        ssid: "Fake Network 1",
-        signal_strength: -90,
-        password_required: true,
-      },
-      {
-        ssid: "Fake Network 2",
-        signal_strength: -80,
-        password_required: true,
-      },
-      {
-        ssid: "Fake Network 3",
-        signal_strength: -70,
-        password_required: false,
-      },
-      {
-        ssid: "cccc",
-        signal_strength: -55,
-        password_required: true,
-      },
+      { ssid: "Fake Network 1", signal_strength: -90, password_required: true },
+      { ssid: "Fake Network 2", signal_strength: -80, password_required: true },
+      { ssid: "Fake Network 3", signal_strength: -70, password_required: false },
+      { ssid: "cccc", signal_strength: -55, password_required: true },
     ];
   }
 
-  public async joinWifiNetwork(ssid: string, _pass: string): Promise<WifiJoinResult> {
+  public async joinWifiNetwork(ssid: string, pass: string): Promise<WifiJoinResult> {
     if (!this.networks.some((n) => n.ssid === ssid)) {
-      this.networks.push({ ssid, pass: _pass });
+      this.networks.push({ ssid, pass });
     }
+
     this.joinStatus = { attempts: 0, last_error: null, joined_ssid: ssid, ip: "192.168.0.51", ap_fallback: false };
+
     return { joined: true, rebooting: false, ssid, mode: "Station" };
   }
 
@@ -88,67 +208,105 @@ export class DummyDeviceApi implements DeviceApi {
 
   public async getAnimationList(): Promise<Animation[]> {
     return [
-      "Animation1",
-      { "Animation2": 1 },
-      { "Animation3": [1, "Message", true] },
-      // { "Animation4": { "Prop1": 1, "Prop2": "aaa" } },
+      "Blank",
+      "Aurora",
+      "Starfield",
+      "Snowfall",
+      "FallingLeaves",
+      "Fireflies",
+      "CanalBoats",
+      "VinylSpin",
+      { TwoLineMessage: ["Line 1", "Line 2"] },
+      { ScrollingMessage: "Message" },
+      { CenteredTitle: ["Title", "Line"] },
+      { StatusCard: ["Alert", "Line"] },
+      "Circles",
+      "Fireworks",
+      "SynthWave",
+      "Rainbows",
+      "TestPattern",
+      "RainbowWheel",
+      "SpinningCube",
+      "Ship",
+      "Columns",
+      "Intensity",
+      "BarChart",
+      "LineChart",
+      "EchoOfTheSoul",
+      "HarmonicSpiral",
+      "OctopusOfSound",
+      "MagneticField",
+      "SilentDancer",
     ];
   }
 
-  public async getPlaylist(): Promise<Playlist> {
-    return [["Animation1", 1_000]];
+  public async getPlaylistInfo(): Promise<PlaylistInfo> {
+    return this.playlistInfo();
   }
 
-  public async sendMessage(message: DeviceMessage) {
-    console.log("DummyDeviceApi.sendMessage:", message);
+  public async listPlaylists(): Promise<PlaylistEntry[]> {
+    return LIBRARY.map((p) => ({ name: p.name, size: JSON.stringify(p.items).length }));
+  }
+
+  public async fetchPlaylist(name: string): Promise<PlaylistItem[]> {
+    const found = LIBRARY.find((p) => p.name === name);
+
+    if (!found) throw new Error(`No playlist named ${name}`);
+
+    return [...found.items];
+  }
+
+  public async putPlaylist(name: string, items: PlaylistItem[]): Promise<void> {
+    const existing = LIBRARY.find((p) => p.name === name);
+
+    if (existing) existing.items = [...items];
+    else LIBRARY.push({ name, items: [...items] });
+  }
+
+  public async deletePlaylist(name: string): Promise<void> {
+    const idx = LIBRARY.findIndex((p) => p.name === name);
+
+    if (idx < 0) throw new Error(`No playlist named ${name}`);
+
+    LIBRARY.splice(idx, 1);
+  }
+
+  public async send(message: DeviceMessage) {
+    console.log("DummyDeviceApi.send:", message);
+
+    if (message === "Next") {
+      this.index = (this.index + 1) % Math.max(this.playlist.length, 1);
+      this.elapsed = 0;
+    } else if (message === "Reset") {
+      this.playlist = [...FESTIVAL];
+      this.source = "Default";
+      this.index = 0;
+      this.elapsed = 0;
+    } else if (message === "ResumeNow") {
+      this.paused = false;
+    } else if (typeof message === "object" && "Pause" in message) {
+      this.paused = message.Pause;
+    } else if (typeof message === "object" && "JumpTo" in message) {
+      if (message.JumpTo < this.playlist.length) {
+        this.index = message.JumpTo;
+        this.elapsed = 0;
+      }
+    } else if (typeof message === "object" && "Animation" in message) {
+      const [animation, duration_ms] = message.Animation;
+      this.override = { animation, duration_ms, elapsed: 0 };
+    } else if (typeof message === "object" && "Playlist" in message) {
+      this.playlist = message.Playlist.playlist.map((i) => ({ ...i }));
+      this.source = message.Playlist.save ? "Saved" : "Live";
+      this.index = 0;
+      this.elapsed = 0;
+    } else if (typeof message === "object" && "PowerLimit" in message) {
+      this.powerPct = Math.round(message.PowerLimit * 100);
+    }
+
+    this.emit({ status: this.status(), playlist: this.playlistInfo() });
   }
 
   public async sendBinary(buffer: Uint8Array<ArrayBuffer>) {
-    console.log("DummyDeviceApi.sendBinary:", buffer);
-  }
-
-  public async sendFile(bytes: Uint8Array<ArrayBuffer>) {
-    console.log("DummyDeviceApi.sendFile:", bytes.length);
-  }
-
-  public async listFiles(): Promise<readonly DeviceFile[]> {
-    const res = await fetch("/wasm/manifest.json");
-
-    if (res.status !== 200) {
-      alert("No mainfest found. Please run: \n\ndeno task generate-manifest");
-      throw new Error("No manifest!");
-    }
-
-    let json;
-
-    try {
-      json = await res.json();
-    } catch {
-      alert("No mainfest found. Please run: \n\ndeno task generate-manifest");
-      throw new Error("No manifest!");
-    }
-
-    return v.parse(v.array(DeviceFileSchema), json);
-
-    // return [
-    //   { name: "file1.txt", size: 123 },
-    //   { name: "file2.txt", size: 123 },
-    //   { name: "file3.txt", size: 123 },
-    //   { name: "file4.txt", size: 123 },
-    //   { name: "file5.txt", size: 123 },
-    // ];
-  }
-
-  public async readFile(filename: string): Promise<Uint8Array> {
-    const res = await fetch(`/wasm/${filename}`);
-    return new Uint8Array(await res.arrayBuffer());
-  }
-
-  public async writeFile(filename: string, bytes: Uint8Array): Promise<void> {
-    console.log("DummyDeviceApi.writeFile:", filename, bytes);
-  }
-
-  public async deleteFile(filename: string): Promise<void> {
-    console.log("DummyDeviceApi.deleteFile:", filename);
+    console.log("DummyDeviceApi.sendBinary:", buffer.byteLength, "bytes");
   }
 }

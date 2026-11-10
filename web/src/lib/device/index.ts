@@ -1,5 +1,6 @@
+import { createSignal } from "solid-js";
 import { RealDeviceApi } from "./real.ts";
-import { DeviceApi } from "./common.ts";
+import { BoardStatus, DeviceApi, PlaylistInfo } from "./common.ts";
 import { DummyDeviceApi } from "./dummy.ts";
 
 export * from "./real.ts";
@@ -8,8 +9,6 @@ export * from "./dummy.ts";
 
 export function getDeviceApi(): DeviceApi {
   const { hostname, port, search } = globalThis.location;
-
-  // return new RealDeviceApi("http://led-board.local");
 
   // ?device=real|dummy always wins — the explicit lever for odd setups.
   const forced = new URLSearchParams(search).get("device");
@@ -32,3 +31,24 @@ export function getDeviceApi(): DeviceApi {
     return new RealDeviceApi();
   }
 }
+
+export const GlobalDeviceApi = getDeviceApi();
+
+// ── Global live feed ───────────────────────────────────────────────────────
+// One subscription for the whole app: the top bar's connection dot and every
+// page read these signals instead of each polling their own.
+
+const [boardStatus, setBoardStatus] = createSignal<BoardStatus | null>(null);
+const [livePlaylist, setLivePlaylist] = createSignal<PlaylistInfo | null>(null);
+const [connected, setConnected] = createSignal<boolean>(false);
+
+GlobalDeviceApi.subscribe((event) => {
+  if (event.status !== undefined) setBoardStatus(event.status);
+  if (event.playlist !== undefined) setLivePlaylist(event.playlist);
+  if (event.connected !== undefined) setConnected(event.connected);
+});
+
+// Kick-start the playlist signal even before the socket connects.
+GlobalDeviceApi.getPlaylistInfo().then(setLivePlaylist, () => {});
+
+export { boardStatus, connected, livePlaylist };
