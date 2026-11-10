@@ -20,7 +20,7 @@ use embedded_graphics::{
 use micromath::F32Ext;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AnimationEnum {
     Blank,
     TwoLineMessage(String, String),
@@ -1376,6 +1376,55 @@ impl Animation for AnimationEnum {
 }
 
 impl AnimationEnum {
+    /// Variant name — the stable "kind" identifier the UI keys its metadata
+    /// (categories, preview renderer) off. Exhaustive on purpose: adding a
+    /// variant must break here until it is named.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            AnimationEnum::Blank => "Blank",
+            AnimationEnum::TwoLineMessage(..) => "TwoLineMessage",
+            AnimationEnum::ScrollingMessage(..) => "ScrollingMessage",
+            AnimationEnum::Circles => "Circles",
+            AnimationEnum::Fireworks => "Fireworks",
+            AnimationEnum::SynthWave => "SynthWave",
+            AnimationEnum::Rainbows => "Rainbows",
+            AnimationEnum::TestPattern => "TestPattern",
+            AnimationEnum::RainbowWheel => "RainbowWheel",
+            AnimationEnum::SpinningCube => "SpinningCube",
+            AnimationEnum::Ship => "Ship",
+            AnimationEnum::Columns => "Columns",
+            AnimationEnum::Intensity => "Intensity",
+            AnimationEnum::BarChart => "BarChart",
+            AnimationEnum::LineChart => "LineChart",
+            AnimationEnum::EchoOfTheSoul => "EchoOfTheSoul",
+            AnimationEnum::HarmonicSpiral => "HarmonicSpiral",
+            AnimationEnum::OctopusOfSound => "OctopusOfSound",
+            AnimationEnum::MagneticField => "MagneticField",
+            AnimationEnum::SilentDancer => "SilentDancer",
+            AnimationEnum::CenteredTitle(..) => "CenteredTitle",
+            AnimationEnum::StatusCard(..) => "StatusCard",
+            AnimationEnum::Aurora => "Aurora",
+            AnimationEnum::Starfield => "Starfield",
+            AnimationEnum::Snowfall => "Snowfall",
+            AnimationEnum::FallingLeaves => "FallingLeaves",
+            AnimationEnum::Fireflies => "Fireflies",
+            AnimationEnum::VinylSpin => "VinylSpin",
+            AnimationEnum::CanalBoats => "CanalBoats",
+        }
+    }
+
+    /// Human-readable title for "now playing" displays: text-carrying
+    /// variants show their text, everything else its kind name.
+    pub fn display_title(&self) -> String {
+        match self {
+            AnimationEnum::ScrollingMessage(msg) => msg.clone(),
+            AnimationEnum::TwoLineMessage(a, b) => alloc::format!("{a} / {b}"),
+            AnimationEnum::CenteredTitle(a, b) => alloc::format!("{a} {b}"),
+            AnimationEnum::StatusCard(a, b) => alloc::format!("{a} {b}"),
+            other => String::from(other.kind_name()),
+        }
+    }
+
     // Shared renderer for CenteredTitle/StatusCard: gold 6x12 font, up to
     // ~10 chars per line, centered — unlike 10x20 the section/status names
     // all fit on the 60px panel.
