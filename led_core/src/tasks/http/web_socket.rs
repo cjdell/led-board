@@ -1,4 +1,5 @@
-use crate::types::*;
+use crate::types::{PlaylistWatch, StatusWatch, WebSocketIncomingMessage, WebSocketIncomingSender};
+use alloc::format;
 use alloc::vec::Vec;
 use animations::TOTAL_PIXELS;
 use embedded_tools::{Debug2Format, error, info, sleep, warn};
@@ -7,13 +8,27 @@ use picoserve::{
     response::ws::{Message, SocketRx, SocketTx, WebSocketCallback},
 };
 
+/// Status/playlist push cadence: the rx timeout doubles as the "tick" that
+/// flushes progress updates (elapsed ms) to every connected client.
+const PUSH_TICK_MS: u64 = 1_000;
+
 pub struct WebSocketHandler {
     web_socket_incoming_sender: WebSocketIncomingSender,
+    status_watch: &'static StatusWatch,
+    playlist_watch: &'static PlaylistWatch,
 }
 
 impl WebSocketHandler {
-    pub fn new(web_socket_incoming_sender: WebSocketIncomingSender) -> Self {
-        Self { web_socket_incoming_sender }
+    pub fn new(
+        web_socket_incoming_sender: WebSocketIncomingSender,
+        status_watch: &'static StatusWatch,
+        playlist_watch: &'static PlaylistWatch,
+    ) -> Self {
+        Self {
+            web_socket_incoming_sender,
+            status_watch,
+            playlist_watch,
+        }
     }
 }
 
@@ -30,14 +45,47 @@ impl WebSocketCallback for WebSocketHandler {
         let mut message_buffer = Vec::new();
         message_buffer.resize(8 * 1024, 0u8);
 
+        // Live-state feeds for this connection. Receiver slots are shared
+        // with GET /api/status — if the board is saturated, this connection
+        // simply works receive-only (control still flows).
+        let mut status_rx = self.status_watch.receiver();
+        let mut playlist_rx = self.playlist_watch.receiver();
+
+        // A fresh page should paint the board state immediately, not after
+        // the first tick.
+        if let Some(rx) = status_rx.as_mut()
+            && let Some(json) = rx.try_get()
+        {
+            tx.send_text(&format!("{{\"status\":{json}}}")).await?;
+        }
+
+        if let Some(rx) = playlist_rx.as_mut()
+            && let Some(json) = rx.try_get()
+        {
+            tx.send_text(&format!("{{\"playlist\":{json}}}")).await?;
+        }
+
         let close_reason = loop {
-            let message = match rx.next_message(&mut message_buffer, sleep(1_000_000)).await? {
+            let message = match rx.next_message(&mut message_buffer, sleep(PUSH_TICK_MS)).await? {
                 Either::First(Ok(message)) => message,
                 Either::First(Err(error)) => {
                     warn!("Websocket error");
                     break Some((error.code(), "Websocket Error"));
                 }
                 Either::Second(()) => {
+                    // Tick: forward anything the display worker published.
+                    if let Some(rx) = status_rx.as_mut()
+                        && let Some(json) = rx.try_changed()
+                    {
+                        tx.send_text(&format!("{{\"status\":{json}}}")).await?;
+                    }
+
+                    if let Some(rx) = playlist_rx.as_mut()
+                        && let Some(json) = rx.try_changed()
+                    {
+                        tx.send_text(&format!("{{\"playlist\":{json}}}")).await?;
+                    }
+
                     continue;
                 }
             };

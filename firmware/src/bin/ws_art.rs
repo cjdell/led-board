@@ -33,7 +33,7 @@ use embedded_graphics::pixelcolor::Rgb888;
 use firmware::ws2812p::{PioWs2812ParallelDriver, PioWs2812ParallelProgram};
 use led_core::led_screen::{LedScreen, TOTAL_PIXELS};
 use led_core::tasks::display;
-use led_core::types::DisplayWorkerChannel;
+use led_core::types::{DisplayWorkerChannel, PlaylistWatch, StatusWatch};
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -116,14 +116,20 @@ async fn main(spawner: Spawner) {
 
     // Hand over to the real worker. The channel is created and immediately
     // forgotten (leaked): the worker only ever reads it, and an empty channel
-    // means "use the built-in festival playlist".
+    // means "use the built-in festival playlist". No web app in this image,
+    // but the worker's live-state feeds are part of its signature — leak the
+    // watches and nobody subscribes.
     let channel: &'static mut DisplayWorkerChannel =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(DisplayWorkerChannel::new()));
+
+    let status_watch: &'static StatusWatch = alloc::boxed::Box::leak(alloc::boxed::Box::new(StatusWatch::new()));
+    let playlist_watch: &'static PlaylistWatch =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(PlaylistWatch::new()));
 
     // Liveness blink on the onboard LED, independent of the display loop.
     spawner.spawn(alive_task(alive).unwrap());
 
-    display::run(channel.receiver(), screen).await
+    display::run(channel.receiver(), screen, status_watch.sender(), playlist_watch.sender()).await
 }
 
 #[embassy_executor::task]

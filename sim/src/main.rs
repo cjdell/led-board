@@ -58,6 +58,8 @@ fn main() {
     let display_channel: &'static DisplayWorkerChannel = Box::leak(Box::new(DisplayWorkerChannel::new()));
     let ws_channel: &'static WebSocketIncomingChannel = Box::leak(Box::new(WebSocketIncomingChannel::new()));
     let activity_watch: &'static ActivityWatch = Box::leak(Box::new(ActivityWatch::new()));
+    let status_watch: &'static StatusWatch = Box::leak(Box::new(StatusWatch::new()));
+    let playlist_watch: &'static PlaylistWatch = Box::leak(Box::new(PlaylistWatch::new()));
 
     let mut frame = SharedFrame::new();
     let heartbeat_led = Arc::new(AtomicBool::new(false));
@@ -111,6 +113,8 @@ fn main() {
                                 heartbeat_led,
                                 disp_sender,
                                 disp_receiver: display_channel.receiver(),
+                                status_watch,
+                                playlist_watch,
                                 ws_sender,
                                 ws_receiver: ws_channel.receiver(),
                                 activity_sender,
@@ -168,6 +172,8 @@ mod core_init_args {
         pub heartbeat_led: Arc<AtomicBool>,
         pub disp_sender: DisplayWorkerSender,
         pub disp_receiver: DisplayWorkerReceiver,
+        pub status_watch: &'static StatusWatch,
+        pub playlist_watch: &'static PlaylistWatch,
         pub ws_sender: WebSocketIncomingSender,
         pub ws_receiver: WebSocketIncomingReceiver,
         pub activity_sender: ActivityWatchSender,
@@ -186,6 +192,8 @@ async fn core_init(spawner: Spawner, args: Args) -> ! {
         heartbeat_led,
         disp_sender,
         disp_receiver,
+        status_watch,
+        playlist_watch,
         ws_sender,
         ws_receiver,
         activity_sender,
@@ -204,6 +212,8 @@ async fn core_init(spawner: Spawner, args: Args) -> ! {
 
     let app = core_http::build_app(AppProps::new(
         ws_sender,
+        status_watch,
+        playlist_watch,
         FileOtaBackend::default(),
         local_fs.clone(),
         config_file,
@@ -213,9 +223,11 @@ async fn core_init(spawner: Spawner, args: Args) -> ! {
     let _ = router_tx.send(app as *const AppRouter<AppProps<SimBoard>> as usize);
 
     match local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
-        Ok(json) => match serde_json::from_str::<Vec<(animations::AnimationEnum, u32)>>(&json) {
-            Ok(playlist_data) => {
-                disp_sender.send(DisplayWorkerMessage::Playlist(playlist_data)).await;
+        Ok(json) => match serde_json::from_str::<Vec<animations::PlaylistItem>>(&json) {
+            Ok(playlist_items) => {
+                disp_sender
+                    .send(DisplayWorkerMessage::Playlist { items: playlist_items, source: PlaylistSource::Saved })
+                    .await;
             }
             Err(err) => eprintln!("(sim) Could not read default playlist: {err:?}"),
         },
@@ -234,7 +246,13 @@ async fn core_init(spawner: Spawner, args: Args) -> ! {
         .unwrap_or(1.0);
     disp_sender.send(DisplayWorkerMessage::PowerLimit(power_limit)).await;
 
-    spawner.spawn(display_task(disp_receiver, LedScreen::new(WindowDisplay::new(frame))).unwrap());
+    spawner.spawn(display_task(
+        disp_receiver,
+        LedScreen::new(WindowDisplay::new(frame)),
+        status_watch.sender(),
+        playlist_watch.sender(),
+    )
+    .unwrap());
     spawner.spawn(pump_task(ws_receiver, disp_sender, local_fs, activity_sender).unwrap());
     spawner.spawn(heartbeat_task(board).unwrap());
 
@@ -246,8 +264,13 @@ async fn core_init(spawner: Spawner, args: Args) -> ! {
 }
 
 #[embassy_executor::task]
-async fn display_task(receiver: DisplayWorkerReceiver, screen: LedScreen<WindowDisplay>) -> ! {
-    led_display::run(receiver, screen).await
+async fn display_task(
+    receiver: DisplayWorkerReceiver,
+    screen: LedScreen<WindowDisplay>,
+    status_tx: StatusWatchSender,
+    playlist_tx: PlaylistWatchSender,
+) -> ! {
+    led_display::run(receiver, screen, status_tx, playlist_tx).await
 }
 
 #[embassy_executor::task]

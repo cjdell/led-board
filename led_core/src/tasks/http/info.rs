@@ -1,13 +1,22 @@
-use crate::config::DEFAULT_PLAYLIST_FILENAME;
+use crate::types::{PlaylistWatch, StatusWatch};
 use animations::Playlist;
-use embedded_tools::local_fs::LocalFsTrait;
 use picoserve::{
     ResponseSent,
     io::Read,
     request::Request,
-    response::{IntoResponse, ResponseWriter},
+    response::{IntoResponse, ResponseWriter, StatusCode},
     routing::RequestHandlerService,
 };
+
+/// Shown until the display worker's first publish (it publishes right at
+/// boot, so this only covers the very first moments after power-up).
+const STATUS_PLACEHOLDER: &str = concat!(
+    r#"{"now_playing":{"kind":"Blank","title":"Booting…","animation":"Blank","elapsed_ms":0,"duration_ms":0},"#,
+    r#""playlist_index":0,"playlist_len":0,"paused":false,"streaming":false,"status_screen":false,"#,
+    r#""power_limit":0.0,"uptime_s":0}"#
+);
+
+const PLAYLIST_PLACEHOLDER: &str = r#"{"playlist":[],"source":"Default","index":0}"#;
 
 pub struct GetAnimationsHandler {}
 
@@ -33,17 +42,20 @@ impl RequestHandlerService<()> for GetAnimationsHandler {
     }
 }
 
-pub struct GetPlaylistHandler<FS: LocalFsTrait + Clone> {
-    local_fs: FS,
+/// `GET /api/info/playlist` — the playlist the display worker is *actually*
+/// running (`{playlist, source, index}`), not just the file on flash: a
+/// live-pushed playlist and the built-in default are reported too.
+pub struct GetPlaylistHandler {
+    watch: &'static PlaylistWatch,
 }
 
-impl<FS: LocalFsTrait + Clone> GetPlaylistHandler<FS> {
-    pub fn new(local_fs: FS) -> Self {
-        Self { local_fs }
+impl GetPlaylistHandler {
+    pub fn new(watch: &'static PlaylistWatch) -> Self {
+        Self { watch }
     }
 }
 
-impl<FS: LocalFsTrait + Clone> RequestHandlerService<()> for GetPlaylistHandler<FS> {
+impl RequestHandlerService<()> for GetPlaylistHandler {
     async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
         &self,
         _: &(),
@@ -51,12 +63,51 @@ impl<FS: LocalFsTrait + Clone> RequestHandlerService<()> for GetPlaylistHandler<
         req: Request<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        let json = match self.local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
-            Ok(json) => json,
-            Err(_err) => {
-                return json_response!(req, writer, "[]");
+        let mut receiver = match self.watch.receiver() {
+            Some(receiver) => receiver,
+            None => {
+                return (StatusCode::SERVICE_UNAVAILABLE, "Too many watchers")
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await
             }
         };
+
+        let json = receiver.try_get().unwrap_or_else(|| PLAYLIST_PLACEHOLDER.into());
+
+        json_response!(req, writer, &json)
+    }
+}
+
+/// `GET /api/status` — the same JSON the WebSocket pushes: now playing,
+/// progress, playlist position, pause/streaming/power/uptime.
+pub struct GetStatusHandler {
+    watch: &'static StatusWatch,
+}
+
+impl GetStatusHandler {
+    pub fn new(watch: &'static StatusWatch) -> Self {
+        Self { watch }
+    }
+}
+
+impl RequestHandlerService<()> for GetStatusHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let mut receiver = match self.watch.receiver() {
+            Some(receiver) => receiver,
+            None => {
+                return (StatusCode::SERVICE_UNAVAILABLE, "Too many watchers")
+                    .write_to(req.body_connection.finalize().await?, writer)
+                    .await
+            }
+        };
+
+        let json = receiver.try_get().unwrap_or_else(|| STATUS_PLACEHOLDER.into());
 
         json_response!(req, writer, &json)
     }

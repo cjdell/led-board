@@ -61,6 +61,10 @@ impl AnimationRunner {
     }
 
     pub fn next(&mut self) {
+        // A user-initiated change ends any running preview override so the
+        // new item is actually visible (the override fades out).
+        self.clear_override_animation();
+
         let Some(next_animation) = self.playlist.advance() else {
             return;
         };
@@ -83,6 +87,7 @@ impl AnimationRunner {
             return false;
         };
 
+        self.clear_override_animation();
         self.current_animation = (0, item.1.duration_ms);
         self.fader.switch_to(item.0);
 
@@ -110,6 +115,7 @@ impl AnimationRunner {
     }
 
     pub fn update_playlist(&mut self, playlist: Playlist) {
+        self.clear_override_animation();
         self.playlist = playlist;
         self.next();
     }

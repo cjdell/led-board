@@ -1,20 +1,33 @@
-//! The display worker: runs the animation playlist into the screen.
+//! The display worker: runs the animation playlist into the screen and
+//! publishes the board's live state.
 //!
 //! On the Pico this is the core1 task; on the simulator it is a task on the
 //! host executor thread. The loop body is identical — frames land on the
 //! screen through [`Ws2812ParallelDriver`].
+//!
+//! The worker is also the *source of truth* for what the panel is showing:
+//! every second (and on any change) it serialises a [`BoardStatus`] onto the
+//! status watch and, when the playlist itself changes, a [`PlaylistInfo`]
+//! onto the playlist watch. The web app turns those into WebSocket pushes
+//! and the `GET /api/status` / `GET /api/info/playlist` answers.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use animations::{Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit};
 use embedded_graphics::pixelcolor::Rgb888;
 
 use crate::info;
 use crate::led_screen::{LedScreen, Ws2812ParallelDriver, PIXELS_PER_STRIP};
-use crate::types::{DisplayWorkerMessage, DisplayWorkerReceiver};
+use crate::types::{
+    BoardStatus, DisplayWorkerMessage, DisplayWorkerReceiver, PlaylistInfo, PlaylistSource, PlaylistWatchSender,
+    Playing, StatusWatchSender,
+};
 
 pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     receiver: DisplayWorkerReceiver,
     mut led_screen: LedScreen<D>,
+    status_tx: StatusWatchSender,
+    playlist_tx: PlaylistWatchSender,
 ) -> ! {
     info!("display worker");
 
@@ -26,7 +39,9 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     let mut buffer_2 = BufferTarget::new();
 
     let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
+    let mut playlist_source = PlaylistSource::Default;
     let mut last_time = embassy_time::Instant::now();
+    let started = last_time;
 
     // Frame ledger: a stall, a dropped frame rate or a dead worker is visible
     // in the log stream instead of having to be inferred from the panel.
@@ -37,6 +52,24 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     // Status-screen mode: when set, the animation is drawn over the still
     // advancing playlist until StatusClear (see DisplayWorkerMessage).
     let mut status_screen: Option<(AnimationEnum, u32)> = None;
+    // The preview override's enum value (for now-playing metadata — the
+    // runner holds the type-erased box, which cannot describe itself).
+    let mut override_meta: Option<(AnimationEnum, u32)> = None;
+    // The paint stream (Grid page) owns the panel until its lease expires.
+    let mut streaming_until: Option<embassy_time::Instant> = None;
+
+    // Status-feed bookkeeping: publish when a second has passed (progress
+    // bars need the clock) or when anything the UI reads has flipped.
+    let mut last_publish = started;
+    let mut dirty = true;
+    let mut last_index = usize::MAX;
+    let mut last_override = false;
+    let mut last_paused = false;
+    let mut last_streaming = false;
+    let mut last_status_screen = false;
+    let mut last_power = f32::NAN;
+
+    publish_playlist(&playlist_tx, &runner, playlist_source);
 
     loop {
         let now = embassy_time::Instant::now();
@@ -50,41 +83,73 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
                 DisplayWorkerMessage::Next => {
                     info!("Next");
                     runner.next();
+                    dirty = true;
                 }
                 DisplayWorkerMessage::Animation(animation, length_ms) => {
                     info!("Override Animation");
+                    override_meta = Some((animation.clone(), length_ms));
                     runner.set_override_animation(Box::new(animation), length_ms);
+                    dirty = true;
                 }
-                DisplayWorkerMessage::Playlist(playlist_data) => {
-                    info!("Update playlist");
-                    if playlist_data.len() > 0 {
-                        runner.update_playlist(Playlist::new(playlist_data));
+                DisplayWorkerMessage::Playlist { items, source } => {
+                    if items.is_empty() {
+                        info!("Update playlist: built-in default ({} items)", Playlist::get_default_playlist_data().len());
+                        let fallback = Playlist::get_default_playlist_data();
+                        runner.update_playlist(Playlist::new(fallback));
+                        playlist_source = PlaylistSource::Default;
                     } else {
-                        runner.update_playlist(Playlist::new(Playlist::get_default_playlist_data()));
+                        info!("Update playlist ({} items, {})", items.len(), source.label());
+                        runner.update_playlist(Playlist::new(items));
+                        playlist_source = source;
                     }
+
+                    publish_playlist(&playlist_tx, &runner, playlist_source);
+                    dirty = true;
                 }
-                DisplayWorkerMessage::PowerLimit(new_power_limit) => power_limit = new_power_limit,
+                DisplayWorkerMessage::PowerLimit(new_power_limit) => {
+                    power_limit = new_power_limit;
+                    dirty = true;
+                }
                 DisplayWorkerMessage::ParamsBuffer(params_buffer) => {
-                    info!("Params Buffer");
                     for params in params_buffer {
                         runner.push_params(params);
                     }
                 }
                 DisplayWorkerMessage::FrameBuffer(pixels) => {
                     runner.set_suspend(10_000);
+                    streaming_until = Some(now + embassy_time::Duration::from_millis(10_000));
+
                     let mut i = 0;
                     for pixel in pixels {
                         buffer_1.buffer[i] = pixel;
                         i += 1;
                     }
                 }
+                DisplayWorkerMessage::Pause(paused) => {
+                    info!("Playlist {}", if paused { "paused" } else { "resumed" });
+                    runner.set_paused(paused);
+                    dirty = true;
+                }
+                DisplayWorkerMessage::JumpTo(index) => {
+                    if runner.jump_to(index as usize) {
+                        info!("Jump to slot {}", index);
+                    }
+                    dirty = true;
+                }
+                DisplayWorkerMessage::ResumeNow => {
+                    runner.clear_suspend();
+                    streaming_until = None;
+                    dirty = true;
+                }
                 DisplayWorkerMessage::Status(animation) => {
                     info!("Status screen");
                     status_screen = Some((animation, 0));
+                    dirty = true;
                 }
                 DisplayWorkerMessage::StatusClear => {
                     info!("Status cleared");
                     status_screen = None;
+                    dirty = true;
                 }
             }
         }
@@ -101,6 +166,59 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;
 
+        // ------------------------------------------------------------------
+        // Live-state feed.
+        // ------------------------------------------------------------------
+        let status = runner.status();
+
+        // A preview ending is only visible inside the runner — sync the meta.
+        if !runner.override_active() {
+            override_meta = None;
+        }
+
+        let streaming = streaming_until.is_some_and(|until| now < until);
+        if last_streaming && !streaming {
+            // Paint lease expired: the playlist took the panel back.
+            dirty = true;
+        }
+
+        let status_screen_on = status_screen.is_some();
+        let override_on = runner.override_active();
+
+        dirty |= status.index != last_index
+            || override_on != last_override
+            || runner.is_paused() != last_paused
+            || status_screen_on != last_status_screen
+            || power_limit != last_power;
+
+        if dirty || now.duration_since(last_publish).as_millis() >= 1_000 {
+            publish_status(
+                &status_tx,
+                &status,
+                &status_screen,
+                &override_meta,
+                runner.is_paused(),
+                streaming,
+                status_screen_on,
+                power_limit,
+                started,
+            )
+            .await;
+
+            if status.index != last_index {
+                info!("Now playing slot {}", status.index);
+            }
+
+            last_publish = now;
+            last_index = status.index;
+            last_override = override_on;
+            last_paused = runner.is_paused();
+            last_streaming = streaming;
+            last_status_screen = status_screen_on;
+            last_power = power_limit;
+            dirty = false;
+        }
+
         frames += 1;
         let window = window_start.elapsed().as_millis();
         if window >= 10_000 {
@@ -114,5 +232,79 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
             frames = 0;
             window_start = embassy_time::Instant::now();
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_status(
+    status_tx: &StatusWatchSender,
+    runner_status: &animations::RunnerStatus,
+    status_screen: &Option<(AnimationEnum, u32)>,
+    override_meta: &Option<(AnimationEnum, u32)>,
+    paused: bool,
+    streaming: bool,
+    status_screen_on: bool,
+    power_limit: f32,
+    started: embassy_time::Instant,
+) {
+    let now_playing = match (status_screen, override_meta) {
+        (Some((animation, ms)), _) => Playing {
+            kind: String::from(animation.kind_name()),
+            title: String::from("Status"),
+            animation: animation.clone(),
+            elapsed_ms: *ms,
+            duration_ms: 0,
+        },
+        (None, Some((animation, duration))) => Playing {
+            kind: String::from(animation.kind_name()),
+            title: animation.display_title(),
+            animation: animation.clone(),
+            elapsed_ms: runner_status.elapsed_ms.min(*duration),
+            duration_ms: *duration,
+        },
+        (None, None) => match &runner_status.item {
+            Some(item) => Playing {
+                kind: String::from(item.kind()),
+                title: item.title(),
+                animation: item.animation.clone(),
+                elapsed_ms: runner_status.elapsed_ms,
+                duration_ms: runner_status.duration_ms,
+            },
+            None => Playing {
+                kind: String::from("Blank"),
+                title: String::from("—"),
+                animation: AnimationEnum::Blank,
+                elapsed_ms: 0,
+                duration_ms: 0,
+            },
+        },
+    };
+
+    let board_status = BoardStatus {
+        now_playing,
+        playlist_index: runner_status.index,
+        playlist_len: runner_status.len,
+        paused,
+        streaming,
+        status_screen: status_screen_on,
+        power_limit,
+        uptime_s: started.elapsed().as_secs(),
+    };
+
+    match serde_json::to_string(&board_status) {
+        Ok(json) => status_tx.send(json),
+        Err(err) => crate::error!("Could not serialise board status: {}", crate::Debug2Format(&err)),
+    }
+}
+
+fn publish_playlist(playlist_tx: &PlaylistWatchSender, runner: &AnimationRunner, source: PlaylistSource) {
+    let info = PlaylistInfo {
+        playlist: runner.playlist().data(),
+        source,
+        index: runner.status().index,
+    };
+    match serde_json::to_string(&info) {
+        Ok(json) => playlist_tx.send(json),
+        Err(err) => crate::error!("Could not serialise playlist info: {}", crate::Debug2Format(&err)),
     }
 }

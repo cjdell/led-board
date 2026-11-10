@@ -5,6 +5,7 @@ pub mod common;
 mod config;
 mod info;
 mod ota;
+mod playlists;
 mod web_socket;
 mod wifi;
 
@@ -12,8 +13,9 @@ use crate::board::Board;
 use crate::tasks::http::{
     common::*,
     config::{GetConfigHandler, SaveConfigHandler},
-    info::{GetAnimationsHandler, GetPlaylistHandler},
+    info::{GetAnimationsHandler, GetPlaylistHandler, GetStatusHandler},
     ota::OtaUpdateHandler,
+    playlists::PlaylistLibraryHandler,
     web_socket::WebSocketHandler,
     wifi::{JoinStatusHandler, WifiForgetHandler, WifiJoinHandler, WifiNetworksHandler, WifiScanHandler},
 };
@@ -32,6 +34,8 @@ use picoserve::{
 /// Pico firmware or the simulator pass their own implementation.
 pub struct AppProps<B: Board> {
     web_socket_incoming_sender: WebSocketIncomingSender,
+    status_watch: &'static StatusWatch,
+    playlist_watch: &'static PlaylistWatch,
     ota: B::Ota,
     local_fs: B::Fs,
     config_file: LedBoardConfigFile<B::Fs>,
@@ -41,6 +45,8 @@ pub struct AppProps<B: Board> {
 impl<B: Board> AppProps<B> {
     pub fn new(
         web_socket_incoming_sender: WebSocketIncomingSender,
+        status_watch: &'static StatusWatch,
+        playlist_watch: &'static PlaylistWatch,
         ota: B::Ota,
         local_fs: B::Fs,
         config_file: LedBoardConfigFile<B::Fs>,
@@ -48,6 +54,8 @@ impl<B: Board> AppProps<B> {
     ) -> Self {
         Self {
             web_socket_incoming_sender,
+            status_watch,
+            playlist_watch,
             ota,
             local_fs,
             config_file,
@@ -66,13 +74,22 @@ impl<B: Board> AppBuilder for AppProps<B> {
         let config_file = self.config_file;
         let local_fs = self.local_fs;
         let ota = self.ota;
+        let status_watch = self.status_watch;
+        let playlist_watch = self.playlist_watch;
 
         Router::from_service(CustomNotFound)
             .route("/", get(async |_: RequestInfo| html_app_response()))
-            .route("/remote", get(async |_: RequestInfo| html_app_response()))
+            // SPA pages — every one needs a route so deep links survive a
+            // reload (the bundle handles routing client-side from there).
+            .route("/now", get(async |_: RequestInfo| html_app_response()))
+            .route("/playlists", get(async |_: RequestInfo| html_app_response()))
             .route("/grid", get(async |_: RequestInfo| html_app_response()))
-            .route("/config", get(async |_: RequestInfo| html_app_response()))
             .route("/wifi", get(async |_: RequestInfo| html_app_response()))
+            .route("/setup", get(async |_: RequestInfo| html_app_response()))
+            // Old paths (bookmarked by the festival crews): same bundle,
+            // the client redirects to the current page name.
+            .route("/remote", get(async |_: RequestInfo| html_app_response()))
+            .route("/config", get(async |_: RequestInfo| html_app_response()))
             .nest(
                 "/api",
                 Router::new()
@@ -109,18 +126,29 @@ impl<B: Board> AppBuilder for AppProps<B> {
                             .options(async || cors_options_response()),
                     )
                     .route("/join-status", get_service(JoinStatusHandler::<B>::new(board.clone())))
+                    .route("/status", get_service(GetStatusHandler::new(status_watch)))
+                    .route(
+                        "/playlists",
+                        get_service(PlaylistLibraryHandler::new(local_fs.clone()))
+                            .post_service(PlaylistLibraryHandler::new(local_fs.clone()))
+                            .delete_service(PlaylistLibraryHandler::new(local_fs.clone())),
+                    )
                     .nest(
                         "/info",
                         Router::new()
                             .route("/animations", get_service(GetAnimationsHandler::new()))
-                            .route("/playlist", get_service(GetPlaylistHandler::new(local_fs.clone()))),
+                            .route("/playlist", get_service(GetPlaylistHandler::new(playlist_watch))),
                     )
                     .route(
                         "/ws",
                         get(async move |upgrade: WebSocketUpgrade| {
                             info!("Upgrade WebSocket connection...");
                             upgrade
-                                .on_upgrade(WebSocketHandler::new(self.web_socket_incoming_sender))
+                                .on_upgrade(WebSocketHandler::new(
+                                    self.web_socket_incoming_sender,
+                                    status_watch,
+                                    playlist_watch,
+                                ))
                                 .with_protocol("json")
                         })
                         .options(async || cors_options_response()),

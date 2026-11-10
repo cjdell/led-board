@@ -72,13 +72,56 @@ fn new_animations_render_content() {
 fn default_playlist_serialises_and_loops() {
     let playlist = animations::Playlist::get_default_playlist_data();
     let json = serde_json::to_string(&playlist).unwrap();
-    let round: Vec<(AnimationEnum, u32)> = serde_json::from_str(&json).unwrap();
+    let round: Vec<animations::PlaylistItem> = serde_json::from_str(&json).unwrap();
     assert_eq!(round.len(), playlist.len());
 
-    let total_s: u32 = playlist.iter().map(|(_, ms)| ms / 1000).sum();
+    let total_s: u32 = playlist.iter().map(|item| item.duration_ms / 1000).sum();
     println!("festival loop: {} items, {total_s}s", playlist.len());
     println!("{json}");
     assert!((180..300).contains(&total_s), "loop should stay near 4 minutes");
+}
+
+#[test]
+fn legacy_tuple_playlist_format_still_parses() {
+    // What old firmware wrote to flash and what `ws_client` sends today:
+    // externally-tagged animation enums inside `(animation, duration_ms)`
+    // tuples.
+    let legacy = r#"[["Intensity",10000],[{"CenteredTitle":["A","B"]},12000]]"#;
+    let items: Vec<animations::PlaylistItem> = serde_json::from_str(legacy).unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].duration_ms, 10_000);
+    assert_eq!(items[0].kind(), "Intensity");
+    assert_eq!(items[1].kind(), "CenteredTitle");
+    assert_eq!(items[1].title(), "A B");
+
+    // Out-of-bounds durations are clamped, not rejected.
+    let clamped: Vec<animations::PlaylistItem> =
+        serde_json::from_str(r#"[{"animation":"Blank","duration_ms":1}]"#).unwrap();
+    assert_eq!(clamped[0].duration_ms, animations::MIN_DURATION_MS);
+}
+
+#[test]
+fn playlist_cursor_wraps_and_jumps() {
+    use animations::Playlist;
+
+    let mut playlist = Playlist::new(Playlist::get_default_playlist_data());
+
+    // advance() to the end must wrap back to the start, not run off: the
+    // first len advances land on 0..len-1, the next one on 0 again.
+    for expected in 0..playlist.len() {
+        let (animation, item) = playlist.advance().expect("non-empty");
+        let _ = animation;
+        assert_eq!(playlist.current_index(), expected);
+        assert_eq!(item.kind(), playlist.item(expected).unwrap().kind());
+    }
+
+    playlist.advance();
+    assert_eq!(playlist.current_index(), 0);
+
+    assert!(playlist.set_current(3));
+    assert_eq!(playlist.current_index(), 3);
+    assert!(!playlist.set_current(playlist.len()));
 }
 
 #[test]

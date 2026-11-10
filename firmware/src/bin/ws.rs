@@ -5,7 +5,7 @@
 extern crate alloc;
 
 use alloc::{string::ToString as _, sync::Arc, vec::Vec};
-use animations::AnimationEnum;
+use animations::PlaylistItem;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::{Executor, Spawner};
@@ -136,6 +136,11 @@ async fn main(spawner: Spawner) {
     let display_worker_sender = display_worker_channel.sender();
     let display_worker_receiver = display_worker_channel.receiver();
 
+    // Live-state feeds (now playing / live playlist JSON) — the display
+    // worker produces them, the web app consumes and pushes them.
+    let status_watch = make_static!(StatusWatch, StatusWatch::new());
+    let playlist_watch = make_static!(PlaylistWatch, PlaylistWatch::new());
+
     // Display worker placement. Single-core is the default: the display-only
     // image (ws_art) proved the whole pipeline works on the main executor,
     // while the core1 split kept freezing the panel at its first frame.
@@ -148,7 +153,14 @@ async fn main(spawner: Spawner) {
             unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
             move || {
                 let executor1 = EXECUTOR1.init(Executor::new());
-                executor1.run(|spawner| spawner.spawn(unwrap!(core1_task(ws2812, display_worker_receiver))));
+                executor1.run(|spawner| {
+                    spawner.spawn(unwrap!(core1_task(
+                        ws2812,
+                        display_worker_receiver,
+                        status_watch.sender(),
+                        playlist_watch.sender()
+                    )))
+                });
             },
         );
     }
@@ -156,7 +168,12 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "core1"))]
     {
         firmware::tasks::usb_dbg::stage(2, "spawning display worker (single core)");
-        spawner.spawn(unwrap!(display_task(ws2812, display_worker_receiver)));
+        spawner.spawn(unwrap!(display_task(
+            ws2812,
+            display_worker_receiver,
+            status_watch.sender(),
+            playlist_watch.sender()
+        )));
     }
 
     // Bench debug console (feature "console"): USB-CDC port + breadcrumb ring.
@@ -387,17 +404,20 @@ async fn main(spawner: Spawner) {
 
     match local_fs.read_text_file(DEFAULT_PLAYLIST_FILENAME).await {
         Ok(json) => {
-            match serde_json::from_str::<Vec<(AnimationEnum, u32)>>(&json) {
-                Ok(playlist_data) => {
+            match serde_json::from_str::<Vec<PlaylistItem>>(&json) {
+                Ok(playlist_items) => {
                     firmware::tasks::usb_dbg::stage(
                         5,
-                        &alloc::format!("pl: {} items from saved playlist", playlist_data.len()),
+                        &alloc::format!("pl: {} items from saved playlist", playlist_items.len()),
                     );
                     // Non-blocking: a wedged display worker must never stall
                     // boot (this cost us the whole venue evening when the
                     // capacity-1 queue filled and core1 stopped consuming).
                     if display_worker_sender
-                        .try_send(DisplayWorkerMessage::Playlist(playlist_data))
+                        .try_send(DisplayWorkerMessage::Playlist {
+                            items: playlist_items,
+                            source: PlaylistSource::Saved,
+                        })
                         .is_err()
                     {
                         error!("display queue full at boot — playlist not applied (stale worker?)");
@@ -420,6 +440,8 @@ async fn main(spawner: Spawner) {
 
     let app_props = AppProps::new(
         web_socket_incoming_channel.sender(),
+        status_watch,
+        playlist_watch,
         firmware::board::RpOtaBackend(flash_storage),
         local_fs.clone(),
         config_file.clone(),
@@ -477,21 +499,31 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn display_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, receiver: DisplayWorkerReceiver) {
+async fn display_task(
+    ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>,
+    receiver: DisplayWorkerReceiver,
+    status_tx: StatusWatchSender,
+    playlist_tx: PlaylistWatchSender,
+) {
     firmware::tasks::usb_dbg::stage(9, "display worker starting (core0)");
 
     let led_screen = LedScreen::new(ws2812);
 
-    display::run(receiver, led_screen).await;
+    display::run(receiver, led_screen, status_tx, playlist_tx).await;
 }
 
 #[embassy_executor::task]
-async fn core1_task(ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>, receiver: DisplayWorkerReceiver) {
+async fn core1_task(
+    ws2812: PioWs2812ParallelDriver<'static, PIO1, 0, 300>,
+    receiver: DisplayWorkerReceiver,
+    status_tx: StatusWatchSender,
+    playlist_tx: PlaylistWatchSender,
+) {
     firmware::tasks::usb_dbg::stage(9, "core1: display worker starting");
 
     let led_screen = LedScreen::new(ws2812);
 
-    display::run(receiver, led_screen).await;
+    display::run(receiver, led_screen, status_tx, playlist_tx).await;
 }
 
 #[cfg(not(feature = "radio"))]

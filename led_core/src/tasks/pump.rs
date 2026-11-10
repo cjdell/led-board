@@ -14,7 +14,7 @@ use crate::config::DEFAULT_PLAYLIST_FILENAME;
 use crate::error;
 use embedded_tools::{info, warn};
 use crate::types::{
-    DisplayWorkerMessage, DisplayWorkerSender, WebSocketIncomingMessage, WebSocketIncomingReceiver,
+    DisplayWorkerMessage, DisplayWorkerSender, PlaylistSource, WebSocketIncomingMessage, WebSocketIncomingReceiver,
 };
 use embedded_tools::local_fs::LocalFsTrait;
 use embedded_tools::Debug2Format;
@@ -62,7 +62,9 @@ pub async fn run<F: LocalFsTrait + Clone>(
                     info!("playlist loaded (live only, {} item(s))", playlist.len());
                 }
 
-                display.send(DisplayWorkerMessage::Playlist(playlist)).await;
+                let source = if save { PlaylistSource::Saved } else { PlaylistSource::Live };
+
+                display.send(DisplayWorkerMessage::Playlist { items: playlist, source }).await;
             }
             WebSocketIncomingMessage::Reset => {
                 warn!("playlist RESET — deleting saved file, built-in default resumes");
@@ -70,7 +72,16 @@ pub async fn run<F: LocalFsTrait + Clone>(
                     error!("Could not delete playlist JSON: {}", Debug2Format(&err));
                 }
 
-                display.send(DisplayWorkerMessage::Playlist(vec![])).await;
+                display.send(DisplayWorkerMessage::Playlist { items: vec![], source: PlaylistSource::Default }).await;
+            }
+            WebSocketIncomingMessage::Pause(paused) => {
+                display.send(DisplayWorkerMessage::Pause(paused)).await;
+            }
+            WebSocketIncomingMessage::JumpTo(index) => {
+                display.send(DisplayWorkerMessage::JumpTo(index)).await;
+            }
+            WebSocketIncomingMessage::ResumeNow => {
+                display.send(DisplayWorkerMessage::ResumeNow).await;
             }
             WebSocketIncomingMessage::ParamsBuffer(bytes) => {
                 let params_buffer = bytes

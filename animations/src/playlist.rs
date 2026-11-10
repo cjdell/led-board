@@ -1,4 +1,3 @@
-use crate::AnimationEnum::ScrollingMessage;
 use crate::{animations::*, common::Animation};
 use alloc::vec;
 use alloc::{boxed::Box, string::String, string::ToString as _, vec::Vec};
