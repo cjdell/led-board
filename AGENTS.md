@@ -15,6 +15,7 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 | `slave_radio/` | ESP32-C3 firmware (esp-hal, RISC-V). **Detached workspace** — excluded from the root workspace and has its own `Cargo.lock` + `.cargo/config.toml`. |
 | `embedded_tools/` | `LocalFs`/`ConfigFile` + the **log facade** (`use embedded_tools::{info,warn,error,debug,Debug2Format}`; defmt on embedded, println on host — feature `defmt` xor `std`). |
 | `ws_client/` | Host-side client. |
+| `web/` | SPA (Solid + TypeScript, Deno/vite, no Bootstrap — custom theme in `src/theme.scss`). `web/compile.sh` → `web/bundle/index.html.gz` (gitignored, include_bytes'd into firmware + sim). `deno task dev` = :3000 dummy API; `deno task check` / `fmt`. |
 | `docs/slave-radio.md` | ESP32 slave radio: wiring, architecture, provisioning/portal behaviour. |
 | `README.md` | Authoritative pinout table + architecture diagrams (Mermaid). |
 
@@ -311,13 +312,14 @@ Radio-link wiring and the C3/C6 side of the link:
   Wifi builds are `wifi,defmt_tcp` and logs come via
   `defmt-print ... tcp --port 19021`. `scripts/stress_wifi.sh` captures it and
   reports per-load throughput with the stress.sh acceptance bar.
-- **Bundle size note (Nov 2026)**: `web/compress.ts` opened the .gz without
-  `truncate: true`, so an older longer bundle left stale trailing bytes after
-  a re-compress (the "73,541 B SPA" figure in old acceptance notes was 69,786 B
-  of gzip + ~3.7 KB of garbage; browsers tolerated it). Fixed; a clean build
-  is now **69,786 B**. Re-run `web/compile.sh` before flashing UI changes.
+- **Bundle size note (Nov 2026, control-deck rewrite)**: the SPA dropped
+  Bootstrap entirely; `web/compile.sh` produces a **40,566 B** gzipped
+  single-file bundle (was 69,786 B clean / 73,541 B with the old truncate
+  bug — see `web/compress.ts` history). Re-run `web/compile.sh` before
+  flashing UI changes; the sim embeds the same gz.
 - **Wi-Fi acceptance PASSED (Nov 2026)**: `HOST=http://<ip>/ ./scripts/stress_wifi.sh`
-  → 15/15 identical 73,541 B loads (pre-truncate-fix number), one sha256 group, 0 curl failures, 0 guard
+  → 15/15 identical 73,541 B loads (pre-truncate-fix number; loads are now
+  40,566 B after the UI rewrite — re-run acceptance at the new size), one sha256 group, 0 curl failures, 0 guard
   trips. Singles ≈0.16 s (≈3.3–3.7 Mbit/s), 4-bursts ≈0.3–0.5 s (≈1.2–2 Mbit/s)
   — 7–10× the radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800 UART), so the slave
   radio is demoted to a provisioning/legacy option, not the throughput path.
@@ -343,14 +345,30 @@ Radio-link wiring and the C3/C6 side of the link:
 
 ## Firmware sizes (release, Nov 2026)
 
-Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (508 K slot; ~36 K headroom on wifi —
-`wifi,defmt_tcp,console` does **not** fit); C3 ≈ 690 KB
-(~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure anywhere.
-(Nov 2026 re-measure after the led-core refactor + clean bundle: radio
-447,144 B, wifi 485,796 B — unchanged conclusions; both ~3.7 K smaller than
-before, which is the garbage-free bundle.)
+Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (508 K slot). After the led-core
+refactor + clean bundle: radio 447,144 B, wifi 485,796 B. After the control-
+deck UI rewrite (40.5 KB gz bundle): **wifi 500,288 B (~20 K headroom), radio
+423,812 B**, and `radio,defmt_tcp,console` fits again too. The `wifi,defmt_tcp`
+overflow that briefly appeared mid-work was absorbed by the Bootstrap-less
+bundle — if the SPA grows past ~55 KB gz, wifi starts busting the slot again.
+C3 ≈ 690 KB (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure
+anywhere else.
 
 ## Protocol notes
+
+- **Web live-status protocol (Nov 2026)**: the display worker is the single
+  source of truth and publishes `StatusWatch`/`PlaylistWatch` (pre-serialised
+  JSON `Arc<str>`s in `led_core::types`); the WS pump pushes them every 1 s +
+  on change as tagged frames `{"status":{…}}` / `{"playlist":{…}}`, and
+  `GET /api/status` serves the same snapshot. Client→server WS messages:
+  `"Ping"|"Next"|"Reset"|"ResumeNow"|{Pause:bool}|{JumpTo:u32}|
+  {Animation:[anim,ms]}|{Playlist:{playlist,save}}|{PowerLimit:f32}`.
+  REST: `/api/playlists[/<name>]` CRUD (named library = plain
+  `playlists/<name>.json` files), `/api/info/playlist` = **live** playlist
+  `{playlist,source,index}`, source `Saved|Default|Live`. `power_limit_pct`
+  is a u8 in JSON. `PlaylistItem` = `{animation, duration_ms, label?}` with
+  a serde visitor still accepting legacy `[animation, ms]` tuples (old flash
+  files + ws_client parse unchanged); durations clamp to 0.5 s–15 min.
 
 - Embassy-net socket budgets: `StackResources<N>` in `src/bin/slave_radio.rs`
   is the smoltcp **max socket count per stack** (AP: dhcp + dns + mdns + 2
