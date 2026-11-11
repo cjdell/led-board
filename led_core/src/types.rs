@@ -125,6 +125,21 @@ pub struct BoardStatus {
     /// the float formatter into the firmware image.
     pub power_limit_pct: u8,
     pub uptime_s: u64,
+    /// The commit this image was built from (build-time `git rev-parse`) —
+    /// a flashed board must never have to be identified by bundle size.
+    pub firmware_sha: String,
+    /// True when the image came from an uncommitted working tree.
+    pub firmware_dirty: bool,
+}
+
+/// `GET /api/version` — identity of the firmware image on flash.
+#[derive(Clone, Serialize)]
+pub struct FirmwareVersion {
+    pub git_sha: &'static str,
+    pub dirty: bool,
+    pub commit_time: &'static str,
+    /// "pico" firmware or the host simulator.
+    pub runtime: &'static str,
 }
 
 /// The live playlist as the display worker sees it — source included so the

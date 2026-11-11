@@ -18,6 +18,7 @@ const STATUS_PLACEHOLDER: &str = concat!(
 
 const PLAYLIST_PLACEHOLDER: &str = r#"{"playlist":[],"source":"Default","index":0}"#;
 
+/// `GET /api/animations` — the animation names a playlist may reference.
 pub struct GetAnimationsHandler {}
 
 impl GetAnimationsHandler {
@@ -37,6 +38,25 @@ impl RequestHandlerService<()> for GetAnimationsHandler {
         let animations = Playlist::get_available();
 
         let json = serde_json::to_string(&animations).expect("Could not serialise animations");
+
+        json_response!(req, writer, &json)
+    }
+}
+
+/// `GET /api/version` — identity of the compiled-in firmware image
+/// (`{git_sha, dirty, commit_time, runtime}`). The live status carries the
+/// sha too; this answers even before the display worker's first publish.
+pub struct GetVersionHandler {}
+
+impl RequestHandlerService<()> for GetVersionHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let json = serde_json::to_string(&crate::types::FirmwareVersion::current()).expect("Could not serialise version");
 
         json_response!(req, writer, &json)
     }

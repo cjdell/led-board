@@ -29,6 +29,7 @@ extern crate std;
 pub mod tasks;
 
 pub mod board;
+pub mod build_info;
 pub mod config;
 pub mod led_screen;
 pub mod types;

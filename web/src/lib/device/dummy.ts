@@ -130,6 +130,8 @@ export class DummyDeviceApi implements DeviceApi {
       status_screen: false,
       power_limit_pct: this.powerPct,
       uptime_s: Math.floor((Date.now() - this.startedAt) / 1000),
+      firmware_sha: "dev00000",
+      firmware_dirty: true,
     };
   }
 

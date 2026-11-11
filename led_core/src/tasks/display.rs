@@ -12,6 +12,7 @@
 //! and the `GET /api/status` / `GET /api/info/playlist` answers.
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use animations::{Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit};
 use embedded_graphics::pixelcolor::Rgb888;
@@ -29,7 +30,11 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     status_tx: StatusWatchSender,
     playlist_tx: PlaylistWatchSender,
 ) -> ! {
-    info!("display worker");
+    info!(
+        "display worker, firmware {}{}",
+        crate::build_info::GIT_SHA,
+        if crate::build_info::GIT_DIRTY { "+dirty" } else { "" }
+    );
 
     led_screen.copy_eg_buffer(&[Rgb888::new(0x10, 0x10, 0x0); crate::led_screen::TOTAL_PIXELS]);
     led_screen.flush().await;
@@ -37,6 +42,29 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
     let mut buffer_1 = BufferTarget::new();
     let mut buffer_2 = BufferTarget::new();
+
+    // Power-on splash: the firmware identity readable across the room with
+    // no console and no browser — commit sha (`*` = dirty tree) over the
+    // commit date — then the WiFi join cards take the panel as usual. The
+    // 6x12 font fits 10 chars, hence sha + `*` and the date's `T…` cut off.
+    let sha_label = if crate::build_info::GIT_DIRTY {
+        format!("{}*", crate::build_info::GIT_SHA)
+    } else {
+        String::from(crate::build_info::GIT_SHA)
+    };
+    let mut splash = AnimationEnum::CenteredTitle(
+        sha_label,
+        String::from(crate::build_info::GIT_COMMIT_TIME.split('T').next().unwrap_or("?")),
+    );
+
+    let splash_start = embassy_time::Instant::now();
+    while splash_start.elapsed() < embassy_time::Duration::from_millis(1_800) {
+        buffer_1.buffer.fill(Rgb888::new(0x00, 0x00, 0x10));
+        splash.draw(splash_start.elapsed().as_millis() as u32, &AnimationParams::default(), &mut buffer_1);
+        apply_power_limit(&mut buffer_1, 0.1);
+        led_screen.copy_eg_buffer(&buffer_1.buffer);
+        led_screen.flush().await;
+    }
 
     let mut runner = AnimationRunner::new(Playlist::new(Playlist::get_default_playlist_data()));
     let mut playlist_source = PlaylistSource::Default;
@@ -313,6 +341,8 @@ async fn publish_status(
         status_screen: status_screen_on,
         power_limit_pct: (power_limit * 100.0).clamp(0.0, 100.0) as u8,
         uptime_s: started.elapsed().as_secs(),
+        firmware_sha: String::from(crate::build_info::GIT_SHA),
+        firmware_dirty: crate::build_info::GIT_DIRTY,
     };
 
     match serde_json::to_string(&board_status) {

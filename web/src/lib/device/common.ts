@@ -132,6 +132,9 @@ export const BoardStatusSchema = v.object({
   status_screen: v.boolean(),
   power_limit_pct: v.number(),
   uptime_s: v.number(),
+  // Optional: boards on pre-version-stamp firmware don't send these.
+  firmware_sha: v.optional(v.string()),
+  firmware_dirty: v.optional(v.boolean()),
 });
 
 export type BoardStatus = v.InferOutput<typeof BoardStatusSchema>;

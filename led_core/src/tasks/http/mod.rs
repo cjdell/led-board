@@ -13,7 +13,7 @@ use crate::board::Board;
 use crate::tasks::http::{
     common::*,
     config::{GetConfigHandler, SaveConfigHandler},
-    info::{GetAnimationsHandler, GetPlaylistHandler, GetStatusHandler},
+    info::{GetAnimationsHandler, GetPlaylistHandler, GetStatusHandler, GetVersionHandler},
     ota::OtaUpdateHandler,
     playlists::PlaylistLibraryHandler,
     web_socket::WebSocketHandler,
@@ -127,6 +127,7 @@ impl<B: Board> AppBuilder for AppProps<B> {
                     )
                     .route("/join-status", get_service(JoinStatusHandler::<B>::new(board.clone())))
                     .route("/status", get_service(GetStatusHandler::new(status_watch)))
+                    .route("/version", get_service(GetVersionHandler {}))
                     .route_service("/playlists", PlaylistLibraryHandler::new(local_fs.clone()))
                     .nest(
                         "/info",
