@@ -356,7 +356,8 @@ After the frame-pipeline work (pipelined DMA driver, `animations` crate
 **wifi 504,056 B (~16 K headroom), radio 425,468 B**. Version-stamp
 build-info + boot splash and the latch-safe driver revision (in-band pad):
 **wifi 507,080 B (~13 K headroom), radio 428,964 B** — wifi is the tight
-one again if the SPA or animations grow.
+one again if the SPA or animations grow. The enforced 1.5 ms latch gap
+(SK6812-clone reset): **wifi 507,180 B, radio 429,100 B**.
 C3 ≈ 690 KB (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure
 anywhere else.
 
@@ -364,18 +365,25 @@ anywhere else.
 
 - **Panel frame pipeline (Nov 2026)**: `ws2812p::write` is pipelined fire-and-
   forget — transpose into the idle DMA buffer (overlaps the previous frame on
-  the wire), busy-poll the DMA channel for completion, then arm the next
-  `dma_push` and **`mem::forget` the returned `Transfer`** (dropping it runs
-  the channel-abort path and kills the frame — do not "fix" the leak; the
-  completion signal is the busy-bit poll). The latch gap is **in-band**: every
-  buffer ends with 16 zero words = 80 µs guaranteed LOW, which is the strip
-  reset pulse; a late DMA wake only stretches it. The PIO program keeps its
-  explicit loop-top `PULL` (BLOCK) at one per OSR word: 41 cycles per 4 bit
-  periods (~780 kHz, 9.23 ms + pad per frame ⇒ ~107 fps ceiling), frame
-  cycle = max(wire+pad, CPU). **Do not switch to auto_fill/PULL-less loops**:
-  the `OUT` is the only stalling instruction left and it sits right after
-  the T1 all-high pulse — an empty FIFO parks the pins HIGH, and a >50 µs
-  high pulse is data, not reset: the Nov 2026 optimisation attempt did
+  the wire), busy-poll the DMA channel for completion, **wait the enforced
+  1.5 ms latch gap**, then arm the next `dma_push` and **`mem::forget` the
+  returned `Transfer`** (dropping it runs the channel-abort path and kills
+  the frame — do not "fix" the leak; the completion signal is the busy-bit
+  poll). The latch gap must be CPU-enforced: **these strips are SK6812-class
+  clones needing ≳1 ms LOW to latch, not the WS2812B 50 µs** — a purely
+  in-band 328 µs pad made the whole 104-fps stream look like one never-
+  latching data frame (visible refresh ≈ 1 Hz, top-of-frame-only partials,
+  static content deceptively perfect; field forensics 2026-11-11: status
+  clock real-time + ledger 1047 frames/10 s while the panel crawled). The
+  old serial driver only "worked" because its render+transpose pause left
+  4–9 ms LOW at every boundary. The buffer tail keeps 8 pad words (41 µs)
+  purely as FIFO-drain slop absorber. The PIO program keeps its explicit
+  loop-top `PULL` (BLOCK) at one per OSR word: 41 cycles per 4 bit periods
+  (~780 kHz, 9.23 ms wire; + pad + gap ≈ 10.8 ms/frame ⇒ ~92 fps ceiling),
+  frame cycle = max(wire+pad+gap, CPU). **Do not switch to auto_fill/PULL-less
+  loops**: the `OUT` is the only stalling instruction left and it sits right
+  after the T1 all-high pulse — an empty FIFO parks the pins HIGH, and a
+  >50 µs high pulse is data, not reset: the Nov 2026 optimisation attempt did
   exactly that and the panel showed artefacting / out-of-step rows until
   reverted. If render+transpose ever exceeds wire time the result is a torn
   frame, not a hang. The 10 s ledger line reports `draw … us/frame, panel
