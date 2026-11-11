@@ -68,6 +68,7 @@ impl BlockDevice for FlashStorage {
 
             let block = &buf[position..block_end];
 
+            defmt::debug!("flash: erase {:#x} start", absolute_position);
             flash
                 .blocking_erase(absolute_position as u32, absolute_position as u32 + Self::BLOCK_SIZE)
                 .map_err(|_| FlashStorageError::WriteFailed)?;
@@ -75,6 +76,7 @@ impl BlockDevice for FlashStorage {
             flash
                 .blocking_write(absolute_position as u32, block)
                 .map_err(|_| FlashStorageError::WriteFailed)?;
+            defmt::debug!("flash: block {:#x} written", absolute_position);
         }
 
         Ok(())

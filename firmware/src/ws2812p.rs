@@ -118,11 +118,6 @@ const PAD_WORDS: usize = 8;
 /// clones. Frame cycle ≈ 9.23 wire + 0.04 pad + 1.5 gap ≈ 10.8 ms.
 const LATCH_GAP_US: u64 = 1_500;
 
-/// Busy-poll interval while waiting for the in-flight frame to finish.
-/// Wake latency only *stretches* the latch gap (the PULL parks the pins
-/// LOW meanwhile), so this costs frame rate, never correctness.
-const DMA_POLL_US: u64 = 50;
-
 /// Parallel WS2812 driver for 8 simultaneous strips, fully pipelined:
 /// while frame N is on the wire, `write` for frame N+1 transposes into
 /// the other DMA buffer and returns once N's transfer is done — the
@@ -245,8 +240,8 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
         // push hung; frames stopping mid-count = core1 died mid-stream.
         static WRITES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         let frame = WRITES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if frame == 0 {
-            crate::tasks::usb_dbg::log(format_args!("disp: write #1 begin"));
+        if frame < 8 {
+            crate::tasks::usb_dbg::log(format_args!("disp: write #{} begin", frame + 1));
         }
 
         // --- Transpose into the idle DMA buffer ---
@@ -286,16 +281,35 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
         // --- Hand over the wire to this frame ---
         if self.started {
             // `Transfer`'s waker plumbing is crate-private, so completion
-            // is a busy poll. Wake latency is safe by construction here:
-            // the waiting SM parks LOW at the loop-top PULL — a late start
-            // only stretches the LOW gap, it can never corrupt a boundary.
+            // is a poll. Use `yield_now` (not an embassy timer): if the
+            // timer alarm is disturbed, a timer-based wait never wakes and
+            // the whole executor (including boot's 1 s delay) stops dead.
+            // Yielding always lets the other tasks run; the panic log below
+            // tells us if the DMA itself is wedged.
+            let mut spins: u32 = 0;
             while self.dma.regs().ctrl_trig().read().busy() {
-                embassy_time::Timer::after_micros(DMA_POLL_US).await;
+                embassy_futures::yield_now().await;
+                spins = spins.wrapping_add(1);
+                if spins > 250_000 {
+                    crate::tasks::usb_dbg::log(format_args!(
+                        "disp: DMA stuck (busy=1, ctrl={:#x})",
+                        self.dma.regs().ctrl_trig().read().0
+                    ));
+                    break;
+                }
+            }
+            if frame < 8 {
+                crate::tasks::usb_dbg::log(format_args!("disp: #{} dma done", frame + 1));
             }
             // Guaranteed latch gap (see LATCH_GAP_US): the pads alone are
             // below these strips' reset threshold, so without this pause
-            // consecutive frames merge into one undivided stream.
-            embassy_time::Timer::after_micros(LATCH_GAP_US).await;
+            // consecutive frames merge into one undivided stream. Measure
+            // with `Instant` (hardware counter) and yield — independent of
+            // the timer alarm.
+            let gap_start = embassy_time::Instant::now();
+            while gap_start.elapsed().as_micros() < LATCH_GAP_US {
+                embassy_futures::yield_now().await;
+            }
         }
 
         // `dma_push` arms the channel (EN=true) inside `configure()` — the

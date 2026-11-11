@@ -20,6 +20,18 @@ const REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE: u32 = 0x4;
 /// reloads the counter and cancels the reset, leaving the board happily
 /// running the old image. Reboot paths set this and feeders must honour it.
 pub static REBOOTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Set for the whole duration of an OTA upload. The HTTP handler calls
+/// `stop_watchdog()`, but the 5 s feeder would re-arm the timer on its next
+/// tick; a compressed image takes longer than the 15 s watchdog period on a
+/// slow link, so the board reset mid-upload and the ROM fell back to the old
+/// slot. Feeders must skip while this is set.
+pub static OTA_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// True while an OTA writer is alive (upload + verify).
+pub fn ota_active() -> bool {
+    OTA_ACTIVE.load(core::sync::atomic::Ordering::SeqCst)
+}
 /// Without this the ROM reboot2 call can return on success, leaving the OTA
 /// image verified-but-never-booted: the board keeps running the old image and
 /// the whole upload looks like a no-op.
@@ -107,6 +119,11 @@ pub struct Rp235xOta<F: BlockDevice> {
     start_addr: u32,
     end_addr: u32,
     position: u32,
+    /// One sector of staging for the tail chunk. Every flash write must be a
+    /// full 4096-byte block: embassy's `blocking_write` takes a separate
+    /// `in_ram` path for sub-page tails, and that path wedges the chip (flash
+    /// program never returns, interrupts off, watchdog reset 15 s later).
+    tail: alloc::vec::Vec<u8>,
 }
 
 impl<F: BlockDevice> Rp235xOta<F>
@@ -141,7 +158,7 @@ where
             return Err(OtaError::TargetPartitionNotFound);
         }
 
-        let partition_index = result;
+        let partition_index = result as u8;
         let permissions_and_location = partition_out[0];
         let permissions_and_flags = partition_out[1];
 
@@ -153,6 +170,8 @@ where
         info!("Rp235xOta: Target partition index: {}", partition_index);
         info!("Rp235xOta: Start: {:#x}, End: {:#x}", start_addr, end_addr);
 
+        OTA_ACTIVE.store(true, core::sync::atomic::Ordering::SeqCst);
+
         Ok(Rp235xOta {
             flash,
             expected_sha256, // ✅ Store expected hash
@@ -160,25 +179,42 @@ where
             start_addr,
             end_addr: end_addr + 1, // +1 to make end_addr exclusive
             position: 0,
+            tail: alloc::vec![0xFFu8; 4096],
         })
     }
 
     pub fn write_chunk(&mut self, chunk: &[u8]) -> Result<(), OtaError> {
+        if chunk.is_empty() || chunk.len() > BLOCK_SIZE {
+            return Err(OtaError::WriteOverflow);
+        }
+
         let offset = self.start_addr + self.position;
 
         if offset + chunk.len() as u32 > self.end_addr {
             return Err(OtaError::WriteOverflow);
         }
 
-        // info!(
-        //     "Rp235xOta: Writing chunk: {:#x}, Size: {} bytes, Progress: {} bytes",
-        //     offset,
-        //     chunk.len(),
-        //     self.position
-        // );
+        // Callers only ever write full sectors except for the final chunk, so
+        // a short chunk mid-stream would re-erase a sector holding earlier
+        // bytes. Refuse rather than silently corrupt the image.
+        if self.position as usize % BLOCK_SIZE != 0 {
+            return Err(OtaError::WriteOverflow);
+        }
+
+        // Always hand the flash a full 4096-byte block: the sector erase and
+        // the RAM-resident program routine are both sector/page aligned, and
+        // the sub-page tail path in `blocking_write` hangs on this chip.
+        let tail = &mut self.tail[..];
+        tail.fill(0xFF);
+        tail[..chunk.len()].copy_from_slice(chunk);
+
+        // The ERASE covers the whole sector; only `chunk.len()` bytes advance
+        // the logical position, so the SHA still covers the real image bytes.
+        let sector = offset & !(BLOCK_SIZE as u32 - 1);
+        let sector_end = sector + BLOCK_SIZE as u32;
 
         self.flash
-            .write(chunk, offset as usize, 1)
+            .write(tail, sector as usize, (sector_end - sector) as usize / BLOCK_SIZE)
             .map_err(|err| OtaError::WriteError(format!("{:?}", err)))?;
 
         self.position += chunk.len() as u32;
@@ -246,22 +282,16 @@ where
             // "the address of the start of the region of flash that was
             // updated. If this address matches the start address of a
             // partition or slot, then that partition or slot is treated
-            // preferentially during boot". The ROM speaks XIP addresses, so
-            // p0 must be 0x1008xxxx-ish — but this board's
-            // `Partition::get_first_last_bytes()` (via the UF2-target-partition
-            // ROM call) returns RAW offsets (`Start: 0x80000` in the field
-            // log, 2026-11-11), and raw p0 silently matched nothing: the ROM
-            // rebooted into the SAME slot forever. Normalise instead of
-            // assuming either way (the original bug was double-adding
-            // FLASH_BASE to an already-XIP address).
-            const XIP_BASE: u32 = 0x1000_0000;
-            let p0 = if self.start_addr >= XIP_BASE {
-                self.start_addr
-            } else {
-                XIP_BASE + self.start_addr
-            };
+            // preferentially during boot". The ROM compares it against the
+            // partition table's *storage* sector addresses (`first_sector *
+            // 0x1000`: A = 0x1000, B = 0x100000). Passing the XIP runtime
+            // address (0x10100000) matches nothing: the reset still happens,
+            // the ROM falls through to a normal boot, and the board keeps
+            // running the old slot. `get_first_last_bytes()` already returns
+            // this storage address, so use it directly.
+            let p0 = self.start_addr;
 
-            info!("Rp235xOta: reboot2 p0={:#010x} (region start {:#x})", p0, self.start_addr);
+            info!("Rp235xOta: reboot2 p0={:#010x} (storage region start)", p0);
 
             rom_data::reboot(
                 REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
@@ -285,5 +315,13 @@ where
         }
 
         Ok(())
+    }
+}
+
+impl<F: BlockDevice> Drop for Rp235xOta<F> {
+    fn drop(&mut self) {
+        // Upload aborted/verified: the watchdog feeder may resume. On a
+        // successful OTA this is moot — `reboot()` never returns.
+        OTA_ACTIVE.store(false, core::sync::atomic::Ordering::SeqCst);
     }
 }

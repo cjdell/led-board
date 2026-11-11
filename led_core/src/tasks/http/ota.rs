@@ -1,6 +1,7 @@
 use crate::board::{Board, OtaBackend, OtaWriter};
 use alloc::{boxed::Box, string::ToString, vec::Vec};
-use embedded_tools::{error, info, Debug2Format};
+use embassy_time::{Duration, Timer};
+use embedded_tools::{Debug2Format, error, info};
 use miniz_oxide::inflate::stream::{InflateState, inflate as mz_inflate};
 use miniz_oxide::{DataFormat, MZFlush};
 use picoserve::{
@@ -33,9 +34,6 @@ where
         mut request: Request<'_, R>,
         response_writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        // Watchdog interferes with the reboot process so we must disable it...
-        self.board.stop_watchdog();
-
         let mut reader = request.body_connection.body().reader();
 
         let query = match request.parts.query() {
@@ -55,6 +53,19 @@ where
         };
         let compressed = flags.contains("z=raw");
 
+        if compressed {
+            // The DEFLATE state is ~44 KB and its constructor builds that on
+            // the stack before boxing it, which resets the chip before a log
+            // can escape (no panic record — it looks like a watchdog reset).
+            // Raw uploads work reliably with a paced client (`just ota`), so
+            // do not pretend to support the compressed flag.
+            return format_response!(
+                request,
+                response_writer,
+                "z=raw is disabled on this build — POST the raw image (no z=raw)\r\n"
+            );
+        }
+
         if sum_str.len() != 64 || !sum_str.bytes().all(|b| b.is_ascii_hexdigit()) {
             return format_response!(request, response_writer, "Bad SHA256 length!\r\n");
         }
@@ -63,7 +74,10 @@ where
         info!("expected_sha256 = {}", expected_sha256.as_str());
         info!("OTA upload starting (compressed = {})", compressed);
 
-        let mut infl = compressed.then(|| Box::new(InflateState::new(DataFormat::Raw)));
+        // `new_boxed` allocates the ~44 KB state on the heap. `Box::new(
+        // InflateState::new(..))` builds it on the stack first, which blows
+        // the task stack and silently resets the chip before any log escapes.
+        let mut infl = compressed.then(|| InflateState::new_boxed(DataFormat::Raw));
 
         let mut ota = match self.ota.begin(expected_sha256) {
             Ok(ota) => ota,
@@ -71,6 +85,12 @@ where
                 return format_response!(request, response_writer, "Could not start OTA: {err:?}\r\n");
             }
         };
+
+        // `begin` sets `OTA_ACTIVE`, so the 5 s feeder has already stopped
+        // re-arming the watchdog by the time we disable it here. Doing this
+        // before `begin` left a race where the feeder re-armed a 15 s timer
+        // and reset the board mid-upload (B stayed empty).
+        self.board.stop_watchdog();
 
         let mut buffer = Vec::new();
         buffer.resize(4096, 0u8);
@@ -84,16 +104,22 @@ where
             let mut ci = 0usize;
             let mut clen = 0usize;
             let mut eof = false;
+            // Same Content-Length bound as the plain path: never call `read`
+            // once the declared body has been consumed (the reader would block
+            // on a keep-alive connection forever).
+            let body_length = reader.content_length();
+            let mut consumed = 0usize;
 
             loop {
                 if ci >= clen {
                     let mut got = 0usize;
-                    while got < cbuf.len() {
+                    while got < cbuf.len() && consumed + got < body_length {
                         match reader.read(&mut cbuf[got..]).await? {
                             0 => break,
                             n => got += n,
                         }
                     }
+                    consumed += got;
                     clen = got;
                     ci = 0;
                     if got == 0 {
@@ -117,6 +143,12 @@ where
                         info!("OTA progress: {} bytes", total_size);
                     }
                     pending.drain(..4096);
+                    // Let the cyw43/network task service the TCP window
+                    // between flash operations. `Flash::blocking_erase` runs
+                    // in RAM with interrupts disabled for ~50 ms per sector;
+                    // back-to-back writes starve WiFi for seconds and the
+                    // upload stalls/drops its connection.
+                    Timer::after(Duration::from_millis(5)).await;
                 }
 
                 if result.bytes_consumed == 0 && result.bytes_written == 0 {
@@ -135,19 +167,27 @@ where
                     return format_response!(request, response_writer, "Could not write flash: {err:?}\r\n");
                 }
                 total_size += pending.len();
+                Timer::after(Duration::from_millis(5)).await;
             }
         } else {
             // Plain path: one 4 KB read per flash chunk.
+            //
+            // Stop at `content_length` instead of waiting for the reader to
+            // return 0. picoserve's body reader blocks on the socket once the
+            // declared body is consumed if the client keeps the connection
+            // open, which wedged the handler forever on every real upload.
+            let content_length = reader.content_length();
+            info!("OTA upload: {} bytes", content_length);
             loop {
                 let mut read_size = 0;
 
-                // Make sure the buffer is full
-                loop {
+                // Fill the buffer, but never read past the declared body.
+                while read_size < buffer.len() && total_size + read_size < content_length {
                     let chunk_read_bytes = reader.read(&mut buffer[read_size..]).await?;
-                    read_size += chunk_read_bytes;
                     if chunk_read_bytes == 0 {
                         break;
                     }
+                    read_size += chunk_read_bytes;
                 }
 
                 if read_size == 0 {
@@ -159,13 +199,23 @@ where
                 }
 
                 total_size += read_size;
+                if total_size % 65536 < read_size {
+                    info!("OTA progress: {} bytes", total_size);
+                }
+                // Give the cyw43/network stack time to drain between flash
+                // sectors (each erase blocks with interrupts off for ~30 ms).
+                Timer::after(Duration::from_millis(20)).await;
             }
         }
 
         info!("OTA wrote {} bytes — finalising (hash verify)...", total_size);
 
         if let Err(err) = ota.finalise() {
-            error!("OTA verification FAILED after {} bytes: {}", total_size, Debug2Format(&err));
+            error!(
+                "OTA verification FAILED after {} bytes: {}",
+                total_size,
+                Debug2Format(&err)
+            );
             return format_response!(request, response_writer, "Verification Error: {err:?}\r\n");
         }
 

@@ -15,6 +15,10 @@ pub const GIT_DIRTY: bool = env!("GIT_DIRTY").as_bytes()[0] == b't';
 /// Commit date (UTC) — orders two builds of the same sha.
 pub const GIT_COMMIT_TIME: &str = env!("GIT_COMMIT_TIME");
 
+/// Wall-clock build time (UTC) — distinguishes two dirty builds of the same
+/// commit, so an OTA's slot switch can be verified with `GET /api/version`.
+pub const BUILD_TIME: &str = env!("BUILD_TIME");
+
 use crate::types::FirmwareVersion;
 
 /// Snapshot for `GET /api/version`.
@@ -24,6 +28,7 @@ impl FirmwareVersion {
             git_sha: GIT_SHA,
             dirty: GIT_DIRTY,
             commit_time: GIT_COMMIT_TIME,
+            build_time: BUILD_TIME,
             // led-core's `std` feature is only ever enabled by the simulator.
             runtime: if cfg!(feature = "std") { "sim" } else { "pico" },
         }

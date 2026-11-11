@@ -29,9 +29,23 @@ fn main() {
     let dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
 
     // Commit date, not build date: orders two builds of the same sha.
-    let commit_time = git(&["log", "-1", "--format=%cd", "--date=format:%Y-%m-%dT%H:%MZ"]).unwrap_or_else(|| "unknown".into());
+    let commit_time =
+        git(&["log", "-1", "--format=%cd", "--date=format:%Y-%m-%dT%H:%MZ"]).unwrap_or_else(|| "unknown".into());
+
+    // Wall-clock build time. The commit date cannot distinguish two dirty
+    // builds of the same sha, which made OTA slot-selection forensics
+    // needlessly hard; `/api/version` exposes this so "did the OTA actually
+    // boot?" is a single HTTP request.
+    let build_time = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into());
 
     println!("cargo:rustc-env=GIT_SHA={sha}");
     println!("cargo:rustc-env=GIT_DIRTY={dirty}");
     println!("cargo:rustc-env=GIT_COMMIT_TIME={commit_time}");
+    println!("cargo:rustc-env=BUILD_TIME={build_time}");
 }

@@ -9,6 +9,7 @@ pub mod common;
 pub mod animations;
 pub mod draw;
 pub mod fader;
+pub mod festival;
 pub mod playlist;
 pub mod runner;
 pub mod xp;

@@ -77,8 +77,18 @@ pub type ActiveBoard = RadioBoard;
 pub type ActiveBoard = DirectBoard;
 
 fn stop_watchdog(watchdog: &SharedWatchdog) {
-    if let Ok(mut watchdog) = watchdog.try_write() {
-        watchdog.stop();
+    // `OTA_ACTIVE` is set by `Rp235xOta::new` before this runs, so the feeder
+    // will skip its next tick. Retry the lock once in case a feed is already
+    // in progress; then the timer is genuinely off.
+    rp235x_ota::OTA_ACTIVE.store(true, core::sync::atomic::Ordering::SeqCst);
+
+    for _ in 0..1024 {
+        if let Ok(mut watchdog) = watchdog.try_write() {
+            watchdog.stop();
+            return;
+        }
+
+        core::hint::spin_loop();
     }
 }
 
@@ -109,6 +119,12 @@ impl Board for RadioBoard {
         // Stop the watchdog feeder re-arming the ROM's asynchronous reboot.
         rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
         rom_data::reboot(0, 10, 0, 0);
+        core::future::ready(())
+    }
+
+    fn bootsel(&self) -> impl core::future::Future<Output = ()> {
+        rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
+        rom_data::reset_to_usb_boot(0, 0);
         core::future::ready(())
     }
 
@@ -191,6 +207,12 @@ impl Board for DirectBoard {
         // Stop the watchdog feeder re-arming the ROM's asynchronous reboot.
         rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
         rom_data::reboot(0, 10, 0, 0);
+        core::future::ready(())
+    }
+
+    fn bootsel(&self) -> impl core::future::Future<Output = ()> {
+        rp235x_ota::REBOOTING.store(true, core::sync::atomic::Ordering::SeqCst);
+        rom_data::reset_to_usb_boot(0, 0);
         core::future::ready(())
     }
 

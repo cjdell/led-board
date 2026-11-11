@@ -295,8 +295,16 @@ pub fn start(spawner: Spawner, driver: Driver<'static, USB>) {
 
 #[cfg(feature = "console")]
 #[embassy_executor::task]
-async fn console_task(driver: Driver<'static, USB>) {
+pub async fn console_task(driver: Driver<'static, USB>) {
     log(format_args!("usb_dbg: console up"));
+
+    // Whatever killed the previous run (panic or hard fault), before anything
+    // else: it is the most valuable line in the log.
+    if let Some(crash) = take_crash() {
+        let text = core::str::from_utf8(&crash.buf[..crash.len as usize]).unwrap_or("?");
+        log(format_args!("prev boot: {}", text));
+        defmt::error!("prev boot: {}", text);
+    }
 
     // Third-party VID: 2E8A app-mode devices get claimed by a DriverKit
     // personality on this Mac (probe-rs install) and never bind — macOS
@@ -446,14 +454,66 @@ async fn console_task(driver: Driver<'static, USB>) {
     embassy_futures::join::join(usb.run(), drain).await;
 }
 
-/// Panic handler for `console` builds: report to the ring, then reset. The
-/// board re-enters the boot sequence, and a host attached to the console
-/// sees the panic line followed by a full breadcrumb replay of the new boot
-/// — field-deployable panic forensics without needing a live executor to
-/// drain the ring (the executor is dying when this runs).
+/// Last panic/fault text, kept in `.uninit` RAM so it survives a reset.
+/// The console task prints and clears it at boot: a fault that kills the
+/// executor before the ring can drain is otherwise invisible.
+#[cfg(feature = "console")]
+#[unsafe(link_section = ".uninit.crashlog")]
+static mut CRASH_LOG: [u8; LINE_CAP] = [0; LINE_CAP];
+
+#[cfg(feature = "console")]
+fn record_crash(text: fmt::Arguments) {
+    let mut m = Msg {
+        len: 0,
+        buf: [0; LINE_CAP],
+    };
+    let _ = write!(&mut m, "{}", text);
+
+    unsafe {
+        let p = &raw mut CRASH_LOG;
+        for (dst, src) in (*p).iter_mut().zip(m.buf.iter()) {
+            *dst = *src;
+        }
+    }
+}
+
+/// Read and clear the saved panic/fault text, if any.
+#[cfg(feature = "console")]
+fn take_crash() -> Option<Msg> {
+    unsafe {
+        let p = &raw mut CRASH_LOG;
+        let buf = *p;
+        let len = buf.iter().position(|b| *b == 0).unwrap_or(LINE_CAP);
+        if len == 0 {
+            return None;
+        }
+        let mut m = Msg {
+            len: len as u8,
+            buf: [0; LINE_CAP],
+        };
+        m.buf[..len].copy_from_slice(&buf[..len]);
+        (*p).fill(0);
+        Some(m)
+    }
+}
+
+/// Hard faults bypass the panic handler (cortex-m-rt's default loops in the
+/// exception, and the watchdog then resets us with no explanation). Record a
+/// marker and reset so the crash log survives.
+#[cfg(feature = "console")]
+#[cortex_m_rt::exception]
+unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    record_crash(format_args!("*** HARDFAULT (stack overflow? see logs)"));
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
+/// Panic handler for `console` builds: report to the ring, save it across the
+/// reset, then reset. The board re-enters the boot sequence and prints the
+/// saved line, so a panic is never silent even with no host attached.
 #[cfg(feature = "console")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     log(format_args!("*** PANIC: {}", info));
+    record_crash(format_args!("*** PANIC: {}", info));
     cortex_m::peripheral::SCB::sys_reset()
 }

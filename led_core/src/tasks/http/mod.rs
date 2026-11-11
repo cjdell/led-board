@@ -109,6 +109,21 @@ impl<B: Board> AppBuilder for AppProps<B> {
                         })
                         .options(async || cors_options_response()),
                     )
+                    // Recovery hatch that does not depend on this app's USB
+                    // stack: the ROM re-enumerates as a fresh BOOTSEL device,
+                    // visible to picotool even when `/dev/cu.usbmodem*` is
+                    // gone. `curl -X POST http://<board>/api/bootsel`.
+                    .route(
+                        "/bootsel",
+                        post({
+                            let board = board.clone();
+                            async move || {
+                                board.bootsel().await;
+                                "Unreachable"
+                            }
+                        })
+                        .options(async || cors_options_response()),
+                    )
                     .route(
                         "/wifi",
                         get_service(WifiScanHandler::<B>::new(board.clone()))

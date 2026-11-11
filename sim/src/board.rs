@@ -39,6 +39,11 @@ impl Board for SimBoard {
         std::process::exit(0);
     }
 
+    async fn bootsel(&self) {
+        println!("(sim) BOOTSEL requested — no USB bootloader on a Mac; exiting.");
+        std::process::exit(0);
+    }
+
     fn stop_watchdog(&self) {
         // No watchdog on a Mac.
     }

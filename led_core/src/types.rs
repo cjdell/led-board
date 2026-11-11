@@ -2,13 +2,13 @@ use crate::config::LedBoardConfig;
 use alloc::{string::String, vec::Vec};
 use animations::{AnimationEnum, AnimationParams, PlaylistItem};
 use core::net::Ipv4Addr;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     channel::{self, Channel},
     watch::{self, Watch},
 };
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_tools::config::{ConfigFile, storage::LocalFsConfigFileStorage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,10 @@ pub enum DisplayWorkerMessage {
     Animation(AnimationEnum, u32),
     /// Replace the live playlist. `items` empty = fall back to the built-in
     /// festival default. `source` tags where it came from for the UI.
-    Playlist { items: Vec<PlaylistItem>, source: PlaylistSource },
+    Playlist {
+        items: Vec<PlaylistItem>,
+        source: PlaylistSource,
+    },
     PowerLimit(f32),
     ParamsBuffer(Vec<AnimationParams>),
     FrameBuffer(Vec<Rgb888>),
@@ -61,6 +64,10 @@ pub enum DisplayWorkerMessage {
     /// Show `animation` over the playlist until StatusClear — the board
     /// reads its own state (join progress, AP fallback, link lost).
     Status(AnimationEnum),
+    /// Like [`Self::Status`], but auto-clears after `timeout_ms`. The WiFi
+    /// join/AP cards use this so a failed network never leaves the panel
+    /// stuck on a status card forever — the festival playlist resumes.
+    StatusTimed(AnimationEnum, u32),
     /// Leave status-screen mode; the playlist resumes.
     StatusClear,
 }
@@ -138,6 +145,9 @@ pub struct FirmwareVersion {
     pub git_sha: &'static str,
     pub dirty: bool,
     pub commit_time: &'static str,
+    /// Wall-clock build time (UTC); changes every build, even for a dirty
+    /// tree with the same commit. Used to verify OTA slot switching.
+    pub build_time: &'static str,
     /// "pico" firmware or the host simulator.
     pub runtime: &'static str,
 }

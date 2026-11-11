@@ -10,8 +10,16 @@ use animations::PlaylistItem;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
 use embassy_executor::Spawner;
-// Used only by the `core1` feature's EXECUTOR1 below.
-#[cfg(feature = "core1")]
+// Used by the `core1` display arrangement and by the USB-on-core1 console.
+#[cfg(any(
+    feature = "core1",
+    all(
+        feature = "console",
+        not(feature = "core1"),
+        not(feature = "usb_ethernet"),
+        not(feature = "ppp")
+    )
+))]
 use embassy_executor::Executor;
 use embassy_futures::join::join;
 #[cfg(not(feature = "radio"))]
@@ -36,9 +44,17 @@ use embassy_rp::{
     gpio::{Level, Output},
     trng::Trng,
 };
-// `core1` feature only — the pre-Nov-2026 display arrangement (see the
-// cfg blocks below); the default single-core build never references it.
-#[cfg(feature = "core1")]
+// `core1` is the pre-Nov-2026 display arrangement; without it core1 is free
+// for the USB console (see USB_CORE1_STACK above).
+#[cfg(any(
+    feature = "core1",
+    all(
+        feature = "console",
+        not(feature = "core1"),
+        not(feature = "usb_ethernet"),
+        not(feature = "ppp")
+    )
+))]
 use embassy_rp::multicore::spawn_core1;
 use embassy_sync::rwlock::RwLock;
 use embassy_time::{Duration, Timer};
@@ -58,7 +74,15 @@ use led_core::tasks::{display, heartbeat, http, pump};
 #[cfg(not(feature = "radio"))]
 use picoserve::AppRouter;
 use rp235x_embedded_tools::flash::{FlashStorage, LittleFsFlashStorage};
-#[cfg(feature = "core1")]
+#[cfg(any(
+    feature = "core1",
+    all(
+        feature = "console",
+        not(feature = "core1"),
+        not(feature = "usb_ethernet"),
+        not(feature = "ppp")
+    )
+))]
 use static_cell::StaticCell;
 
 #[cfg(feature = "defmt_tcp")]
@@ -73,24 +97,19 @@ use panic_reset as _;
 #[cfg(all(feature = "defmt_rtt", not(feature = "console")))]
 use panic_probe as _;
 
+include!(concat!(env!("OUT_DIR"), "/image_version.rs"));
+
 #[unsafe(link_section = ".start_block")]
 #[used]
 pub static IMAGE_DEF: Block<3> = Block::new([
     {
-        let value = IMAGE_TYPE_EXE
-            | IMAGE_TYPE_EXE_CHIP_RP2350
-            | IMAGE_TYPE_EXE_CPU_ARM
-            | IMAGE_TYPE_EXE_TYPE_SECURITY_S
-            | IMAGE_TYPE_TBYB;
+        let value =
+            IMAGE_TYPE_EXE | IMAGE_TYPE_EXE_CHIP_RP2350 | IMAGE_TYPE_EXE_CPU_ARM | IMAGE_TYPE_EXE_TYPE_SECURITY_S;
 
         item_generic_1bs(value, 1, ITEM_1BS_IMAGE_TYPE)
     },
     item_generic_1bs(0, 2, ITEM_1BS_VERSION),
-    {
-        let major = 1u16;
-        let minor = 3u16;
-        (major as u32) << 16 | minor as u32
-    },
+    IMAGE_VERSION,
 ]);
 
 const FLASH_SIZE: usize = 4 * 1024 * 1024;
@@ -111,6 +130,26 @@ bind_interrupts!(struct Irqs {
 static mut CORE1_STACK: embassy_rp::multicore::Stack<32768> = embassy_rp::multicore::Stack::new();
 #[cfg(feature = "core1")]
 static EXECUTOR1: StaticCell<Executor> = StaticCell::new();
+
+// USB console on core1 when the display worker owns core0. The panel driver
+// busy-polls the PIO/DMA for ~8-10 ms per frame; when the USB stack shares
+// that executor, control transfers are delayed past the host's tolerance and
+// macOS drops `/dev/cu.usbmodem*` after a few minutes. A dedicated core1
+// executor keeps the console enumerated for the whole run.
+#[cfg(all(
+    feature = "console",
+    not(feature = "core1"),
+    not(feature = "usb_ethernet"),
+    not(feature = "ppp")
+))]
+static mut USB_CORE1_STACK: embassy_rp::multicore::Stack<16384> = embassy_rp::multicore::Stack::new();
+#[cfg(all(
+    feature = "console",
+    not(feature = "core1"),
+    not(feature = "usb_ethernet"),
+    not(feature = "ppp")
+))]
+static USB_EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -145,6 +184,12 @@ async fn main(spawner: Spawner) {
         &program,
     );
 
+    // The panel driver polls the DMA BUSY bit; its completion IRQ is never
+    // used. Mask CH2 so embassy's DMA IRQ handler cannot panic on an AHB
+    // error and deadlock in the console panic path. (cyw43 uses CH0/CH1.)
+    let dma_inte = embassy_rp::pac::DMA.inte(0).read();
+    embassy_rp::pac::DMA.inte(0).write_value(dma_inte & !(1 << 2));
+
     firmware::tasks::usb_dbg::stage(11, "ws2812 PIO driver configured");
 
     let display_worker_channel = make_static!(DisplayWorkerChannel, DisplayWorkerChannel::new());
@@ -161,9 +206,13 @@ async fn main(spawner: Spawner) {
     // image (ws_art) proved the whole pipeline works on the main executor,
     // while the core1 split kept freezing the panel at its first frame.
     // `core1` restores the old multicore arrangement for comparison.
-    #[cfg(feature = "core1")]
+    #[cfg(all(feature = "core1", not(feature = "no_display")))]
     {
         firmware::tasks::usb_dbg::stage(2, "spawning core1 display");
+        // Create the senders before the closure: capturing the `&mut Watch`
+        // references moves them, but the web router needs the watches later.
+        let status_tx = status_watch.sender();
+        let playlist_tx = playlist_watch.sender();
         spawn_core1(
             p.CORE1,
             unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
@@ -173,15 +222,15 @@ async fn main(spawner: Spawner) {
                     spawner.spawn(unwrap!(core1_task(
                         ws2812,
                         display_worker_receiver,
-                        status_watch.sender(),
-                        playlist_watch.sender()
+                        status_tx,
+                        playlist_tx
                     )))
                 });
             },
         );
     }
 
-    #[cfg(not(feature = "core1"))]
+    #[cfg(all(not(feature = "core1"), not(feature = "no_display")))]
     {
         firmware::tasks::usb_dbg::stage(2, "spawning display worker (single core)");
         spawner.spawn(unwrap!(display_task(
@@ -192,6 +241,16 @@ async fn main(spawner: Spawner) {
         )));
     }
 
+    // Recovery build: no panel worker, so a DMA/PIO fault cannot hang boot.
+    // The web app still starts (status feeds stay at their defaults) and the
+    // USB console / `/api/ota` / `/api/bootsel` remain available.
+    #[cfg(feature = "no_display")]
+    {
+        firmware::tasks::usb_dbg::stage(2, "display disabled (recovery build)");
+        drop(ws2812);
+        drop(display_worker_receiver);
+    }
+
     // Bench debug console (feature "console"): USB-CDC port + breadcrumb ring.
     // Started AFTER spawn_core1 — a console that initializes the USB PHY
     // before core1 comes off reset breaks the core1 handoff (observed on the
@@ -199,14 +258,43 @@ async fn main(spawner: Spawner) {
     // (usb_ethernet/ppp builds own p.USB for networking; they get no console.)
     #[cfg(all(feature = "console", not(feature = "usb_ethernet"), not(feature = "ppp")))]
     {
-        let dbg_driver = usb::Driver::new(p.USB, Irqs);
-        firmware::tasks::usb_dbg::start(spawner, dbg_driver);
+        #[cfg(any(feature = "core1", not(feature = "usb_core1")))]
+        {
+            let dbg_driver = usb::Driver::new(p.USB, Irqs);
+            firmware::tasks::usb_dbg::start(spawner, dbg_driver);
+        }
+
+        #[cfg(all(not(feature = "core1"), feature = "usb_core1"))]
+        {
+            // Dedicated core1 executor for USB: the display worker on core0
+            // busy-polls the panel DMA for ~8-10 ms per frame, which starves
+            // the USB stack and eventually drops the CDC device.
+            let usb_peri = p.USB;
+            spawn_core1(
+                p.CORE1,
+                unsafe { &mut *core::ptr::addr_of_mut!(USB_CORE1_STACK) },
+                move || {
+                    let dbg_driver = usb::Driver::new(usb_peri, Irqs);
+                    let executor = USB_EXECUTOR.init(Executor::new());
+                    executor.run(|spawner| {
+                        spawner.spawn(unwrap!(firmware::tasks::usb_dbg::console_task(dbg_driver)));
+                    });
+                },
+            );
+        }
+
         firmware::tasks::usb_dbg::stage(
             1,
             &alloc::format!(
                 "BOOT ws v{} [{}]",
                 env!("CARGO_PKG_VERSION"),
-                if cfg!(feature = "radio") { "radio" } else if cfg!(feature = "wifi") { "wifi" } else { "?" }
+                if cfg!(feature = "radio") {
+                    "radio"
+                } else if cfg!(feature = "wifi") {
+                    "wifi"
+                } else {
+                    "?"
+                }
             ),
         );
     }
@@ -408,7 +496,17 @@ async fn main(spawner: Spawner) {
         spawner.spawn(defmt_runner(stack).unwrap());
     }
 
+    firmware::tasks::usb_dbg::log(format_args!(
+        "heap before wait: free={} used={}",
+        HEAP.free(),
+        HEAP.used()
+    ));
     Timer::after(Duration::from_millis(1_000)).await;
+    firmware::tasks::usb_dbg::log(format_args!(
+        "heap after wait: free={} used={}",
+        HEAP.free(),
+        HEAP.used()
+    ));
 
     // The machine this app runs on, as the core sees it: reboot / watchdog /
     // heartbeat / provisioning delegate to the hardware (or the slave radio).
@@ -479,7 +577,10 @@ async fn main(spawner: Spawner) {
             spawner.spawn(web_task(id, stack, app).unwrap());
         }
 
-        firmware::tasks::usb_dbg::stage(7, &alloc::format!("app: {} web tasks spawned", http::WEB_TASK_POOL_SIZE));
+        firmware::tasks::usb_dbg::stage(
+            7,
+            &alloc::format!("app: {} web tasks spawned", http::WEB_TASK_POOL_SIZE),
+        );
     }
 
     // Relay-served app: publish the router before any stream is accepted.
@@ -573,13 +674,24 @@ async fn defmt_runner(stack: Stack<'static>) {
 #[embassy_executor::task]
 async fn watchdog_runner(watchdog: SharedWatchdog) {
     let delay = Duration::from_millis(5_000);
+    let mut ticks: u32 = 0;
 
     loop {
         Timer::after(delay).await;
+        ticks = ticks.wrapping_add(1);
+
+        // Heap telemetry (every 30 s over the USB ring): LLFF fragmentation
+        // shows up here before an allocation failure freezes an executor.
+        if ticks % 6 == 0 {
+            firmware::tasks::usb_dbg::log(format_args!("heap: free={} used={}", HEAP.free(), HEAP.used()));
+        }
 
         // Never feed while a ROM reboot is pending: `reboot()` arms the
-        // watchdog as its reset mechanism, so feeding here silently cancels
-        // every OTA/bootsel reboot (the board just keeps running old code).
+        // watchdog as its reset mechanism, and a feed would reload the counter
+        // and cancel the pending reboot. During an OTA upload the feeder KEEPS
+        // RUNNING: flash sector erase blackouts (~30 ms each) can otherwise
+        // starve this task long enough for a 15 s watchdog to fire mid-upload
+        // (field: B's first sector erased, then a TimedOut reset every attempt).
         if rp235x_ota::REBOOTING.load(core::sync::atomic::Ordering::SeqCst) {
             continue;
         }

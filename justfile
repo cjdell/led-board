@@ -34,6 +34,37 @@ main:
     sleep 0.5
     probe-rs attach --chip RP235x tmp/ws.elf
 
+# Flash the image in tmp/ws.bin to BOTH slots, then verify what actually runs.
+# Both slots on purpose: the ROM boots the highest IMAGE_DEF version, so a
+# stale newer build in the other slot silently wins and your flash "does
+# nothing". Identical slots make the boot deterministic. (OTA still works
+# normally: it writes the inactive slot and reboot2 forces it.)
+flash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [ ! -f tmp/ws.bin ]; then
+        echo "no tmp/ws.bin — run 'just main' (build + flash + attach) or build first" >&2
+        exit 2
+    fi
+
+    just bootsel >/dev/null 2>&1 || true
+    sleep 2
+    picotool load --offset 0x10001000 tmp/ws.bin
+    picotool load --offset 0x10100000 tmp/ws.bin
+    picotool reboot -a -f
+    sleep 12
+    just verify
+
+# Everything that must pass before a commit.
+ci:
+    cargo check -p sim
+    cargo check -p led-core --no-default-features --features std
+    cargo check -p firmware --features wifi,defmt_tcp,console --target thumbv8m.main-none-eabihf
+    cargo test -p sim
+    cargo test -p radio_link
+    cd web && deno task check && deno fmt --check src
+
 ota:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -49,13 +80,12 @@ ota:
 
     sum=$(sha256sum tmp/ws.bin | awk "{print \$1}")
 
-    # Raw-DEFLATE the image (~2.5x smaller): the /api/ota handler inflates
-    # streams when the query carries z=raw (link runs at 115200, see notes).
-    python3 -c "import zlib; d=open('tmp/ws.bin','rb').read(); c=zlib.compressobj(9,zlib.DEFLATED,-15); open('tmp/ws.def','wb').write(c.compress(d)+c.flush())"
+    echo "Uploading raw image ($(stat -f%z tmp/ws.bin) bytes, paced)"
 
-    echo "Uploading... ($(stat -f%z tmp/ws.bin) -> $(stat -f%z tmp/ws.def) bytes on the wire)"
-
-    curl -# -X POST --data-binary @tmp/ws.def "http://$host/api/ota?$sum&z=raw"
+    # Pace the upload: an unpaced 600 KB POST overruns the cyw43 RX path in
+    # this embassy pin and the TCP stream stalls after ~12 KB. 24 KB/s keeps
+    # the flash-sector blackouts survivable; a 666 KB image takes ~28 s.
+    curl -# --limit-rate 24k -X POST --data-binary @tmp/ws.bin "http://$host/api/ota?$sum"
 
 attach_rtt:
     probe-rs attach --chip RP235x tmp/ws.elf
@@ -137,6 +167,9 @@ setup_flash:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # One-off partition table layout (A/B = 0xFF000 each, 1020 K, Nov 2026).
+    # Re-run this after changing partitions.json, then reboot before flashing
+    # an app image; OTA targets the active slot from this table.
     picotool partition create partitions.json tmp/partition_table.bin
     picotool load --offset 0x10000000 tmp/partition_table.bin
     picotool partition info
@@ -190,5 +223,91 @@ radio-monitor:
 # (see firmware/src/tasks/usb_dbg.rs). The --vid/--pid flags are required:
 # picotool's default scan only auto-classifies VID 2E8A, and app-mode 2E8A
 # devices are grabbed by a DriverKit personality on this Mac and never bind.
+#
+# Verified to answer **even with a wedged executor**, so try this before
+# asking for a physical BOOTSEL.
 bootsel:
     picotool reboot -u -f --vid 5824 --pid 1171
+
+# Post-flash sanity check. This exists because hours were lost to a trap:
+# the RP2350 boots the HIGHEST-version slot, so flashing A while B still holds
+# a newer build silently runs B — "my fix didn't work" when it was never
+# booted. This compares what the board reports against the image on disk and
+# proves the app is actually alive (uptime + playlist advancing).
+verify:
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    host=${HOST:-10.3.2.212}
+    image=${IMAGE:-tmp/ws.bin}
+    fail=0
+
+    note() { printf '%s\n' "$*"; }
+    ok()   { printf '  [ok]   %s\n' "$*"; }
+    bad()  { printf '  [FAIL] %s\n' "$*"; fail=1; }
+
+    if [ ! -f "$image" ]; then
+        note "no $image — build first (just main) or pass the file via IMAGE=..."
+        exit 2
+    fi
+
+    # build_time is the only timestamp in the binary with seconds; the commit
+    # time is `YYYY-MM-DDTHH:MMZ`.
+    want=$(strings "$image" | grep -E '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' | tail -1)
+
+    note "verifying $host against $image"
+    [ -n "$want" ] && note "  image build_time: $want"
+
+    if ! body=$(curl -sS --max-time 5 "http://$host/api/version"); then
+        bad "board not answering /api/version at $host (wedged? wrong IP?)"
+        exit 1
+    fi
+    ok "board reachable at $host"
+
+    have=$(printf '%s' "$body" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("build_time",""))')
+    if [ -z "$want" ]; then
+        note "  [warn] could not read build_time from $image (skipping slot check)"
+    elif [ "$want" = "$have" ]; then
+        ok "running the image you built ($have)"
+    else
+        bad "board is running $have, but $image was built $want"
+        note "         The RP2350 boots the HIGHEST-version slot: the other slot"
+        note "         is newer, so your flash to A was ignored. Use 'just flash'"
+        note "         (writes both slots) or OTA the new image."
+    fi
+
+    # Liveness: uptime must advance and the display playlist must be moving.
+    s1=$(curl -s --max-time 5 "http://$host/api/status" || true)
+    sleep 2
+    s2=$(curl -s --max-time 5 "http://$host/api/status" || true)
+    if [ -z "$s1" ] || [ -z "$s2" ]; then
+        note "  [warn] /api/status unavailable (expected on no_display recovery builds)"
+    else
+        u1=$(printf '%s' "$s1" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("uptime_s",0))')
+        u2=$(printf '%s' "$s2" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("uptime_s",0))')
+        if [ "$u2" -gt "$u1" ]; then ok "uptime advancing (${u1}s -> ${u2}s)"; else bad "uptime frozen at ${u1}s — executor wedged"; fi
+
+        i1=$(printf '%s' "$s1" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("playlist_index",0))')
+        e1=$(printf '%s' "$s1" | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("now_playing") or {}).get("elapsed_ms",0))')
+        i2=$(printf '%s' "$s2" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("playlist_index",0))')
+        e2=$(printf '%s' "$s2" | python3 -c 'import sys,json; d=json.load(sys.stdin); print((d.get("now_playing") or {}).get("elapsed_ms",0))')
+        if [ "$i2" -ne "$i1" ] || [ "$e2" -gt "$e1" ]; then
+            ok "display worker ticking (slot $i1 -> $i2, elapsed ${e1}ms -> ${e2}ms)"
+        else
+            bad "display worker not advancing (slot $i1, elapsed ${e1}ms -> ${e2}ms)"
+        fi
+    fi
+
+    if ls /dev/cu.usbmodembench* >/dev/null 2>&1; then
+        ok "USB console present ($(ls /dev/cu.usbmodembench* | head -1))"
+    else
+        note "  [warn] no /dev/cu.usbmodembench* — USB cable unplugged, or the CDC"
+        note "         link dropped. Recovery still works: POST /api/bootsel, or"
+        note "         'just bootsel' once the port is back."
+    fi
+
+    if [ "$fail" -ne 0 ]; then
+        note "RESULT: FAIL"
+        exit 1
+    fi
+    note "RESULT: PASS"

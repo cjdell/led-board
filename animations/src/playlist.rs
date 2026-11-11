@@ -159,25 +159,42 @@ impl Playlist {
             AnimationEnum::Fireflies,
             AnimationEnum::VinylSpin,
             AnimationEnum::CanalBoats,
+            AnimationEnum::Robin,
+            AnimationEnum::Owl,
+            AnimationEnum::Deer,
+            AnimationEnum::SnowLeopard,
+            AnimationEnum::FatherChristmas,
+            AnimationEnum::FrostFairies,
+            AnimationEnum::SnowGlobe,
+            AnimationEnum::Penguins,
+            AnimationEnum::Reindeer,
+            AnimationEnum::ElectricGuitar,
+            AnimationEnum::MadameRatcliffe,
+            AnimationEnum::Parrot,
+            AnimationEnum::CircusTent,
+            AnimationEnum::Elephants,
+            AnimationEnum::SpinningWheel,
+            AnimationEnum::MillBuildings,
         ]
     }
 
-    /// Leigh Lights parade loop (Nov 2026): festival animations ONLY — the
-    /// legacy effects (Fireworks, Rainbows, SynthWave, SilentDancer,
-    /// SpinningCube, Circles, EchoOfTheSoul) are deliberately absent from the
-    /// startup loop so the board opens on the parade programme. The old
-    /// effects remain available in `/api/info/animations` for manual use.
-    ///
-    /// Four lantern sections, each led by a gold title card, framed by the
-    /// "Light Up Leigh" scroll. One loop ≈ 230 s. Hardcoded so the board boots
-    /// straight into it with no playlist file on flash (delete
+    /// Leigh Lights parade loop (Nov 2026): the whole festival brief, four
+    /// lantern sections, each led by a gold title card and framed by the
+    /// "Light Up Leigh" scroll. One loop ≈ 5 min 20 s. Hardcoded so the board
+    /// boots straight into it with no playlist file on flash (delete
     /// `playlist_default.json` / "Reset" to reach it).
+    ///
+    /// Every section item in the original brief has a scene: robins/owls/deer
+    /// and leaves; snow leopard, Father Christmas, frost fairies, snow globe,
+    /// penguins, reindeer and snow; aurora, Buzzcocks/electric guitar, vinyl,
+    /// Madame Ratcliffe's hat parade and parrots; canal boats, mills, the
+    /// spinning wheel, circus acrobat/clown and the colourful elephants.
     pub fn get_default_playlist_data() -> Vec<PlaylistItem> {
         vec![
             // ── Banner ────────────────────────────────────────────────────
             PlaylistItem::new(
                 AnimationEnum::ScrollingMessage("Light Up Leigh with Leigh Hackspace".to_string()),
-                14_000,
+                12_000,
             )
             .with_label("Banner"),
             // ── Section 1: Natures Magic ─────────────────────────────────
@@ -185,30 +202,44 @@ impl Playlist {
                 AnimationEnum::CenteredTitle("Natures".to_string(), "Magic".to_string()),
                 5_000,
             ),
-            PlaylistItem::new(AnimationEnum::FallingLeaves, 18_000).with_label("Section 1 · Leaves"),
-            PlaylistItem::new(AnimationEnum::Fireflies, 20_000).with_label("Section 1 · Fireflies"),
+            PlaylistItem::new(AnimationEnum::FallingLeaves, 12_000).with_label("Section 1 · Leaves"),
+            PlaylistItem::new(AnimationEnum::Robin, 10_000).with_label("Section 1 · Robins"),
+            PlaylistItem::new(AnimationEnum::Owl, 10_000).with_label("Section 1 · Owls"),
+            PlaylistItem::new(AnimationEnum::Deer, 12_000).with_label("Section 1 · Deer"),
+            PlaylistItem::new(AnimationEnum::Fireflies, 8_000).with_label("Section 1 · Fireflies"),
             // ── Section 2: Awe and Wonder ────────────────────────────────
             PlaylistItem::new(
                 AnimationEnum::CenteredTitle("Awe and".to_string(), "Wonder".to_string()),
                 5_000,
             ),
-            PlaylistItem::new(AnimationEnum::Starfield, 18_000).with_label("Section 2 · Stars"),
-            PlaylistItem::new(AnimationEnum::Snowfall, 20_000).with_label("Section 2 · Snow"),
+            PlaylistItem::new(AnimationEnum::Starfield, 10_000).with_label("Section 2 · Stars"),
+            PlaylistItem::new(AnimationEnum::Snowfall, 10_000).with_label("Section 2 · Snow"),
+            PlaylistItem::new(AnimationEnum::SnowGlobe, 10_000).with_label("Section 2 · Snow Globe"),
+            PlaylistItem::new(AnimationEnum::SnowLeopard, 10_000).with_label("Section 2 · Snow Leopard"),
+            PlaylistItem::new(AnimationEnum::FrostFairies, 10_000).with_label("Section 2 · Frost Fairies"),
+            PlaylistItem::new(AnimationEnum::Reindeer, 10_000).with_label("Section 2 · Reindeer"),
+            PlaylistItem::new(AnimationEnum::FatherChristmas, 12_000).with_label("Section 2 · Father Christmas"),
+            PlaylistItem::new(AnimationEnum::Penguins, 10_000).with_label("Section 2 · Penguins"),
             // ── Section 3: Northern Lights ───────────────────────────────
             PlaylistItem::new(
                 AnimationEnum::CenteredTitle("Northern".to_string(), "Lights".to_string()),
                 5_000,
             ),
-            PlaylistItem::new(AnimationEnum::Aurora, 30_000).with_label("Section 3 · Aurora"),
-            PlaylistItem::new(AnimationEnum::Starfield, 14_000),
-            PlaylistItem::new(AnimationEnum::VinylSpin, 16_000),
+            PlaylistItem::new(AnimationEnum::Aurora, 28_000).with_label("Section 3 · Aurora Borealis"),
+            PlaylistItem::new(AnimationEnum::ElectricGuitar, 10_000).with_label("Section 3 · The Buzzcocks"),
+            PlaylistItem::new(AnimationEnum::VinylSpin, 8_000).with_label("Section 3 · Vinyl Records"),
+            PlaylistItem::new(AnimationEnum::MadameRatcliffe, 8_000).with_label("Section 3 · Madame Ratcliffe · Hats"),
+            PlaylistItem::new(AnimationEnum::Parrot, 8_000).with_label("Section 3 · Parrots"),
             // ── Section 4: Heritage in Motion ────────────────────────────
             PlaylistItem::new(
                 AnimationEnum::CenteredTitle("Heritage".to_string(), "in Motion".to_string()),
                 5_000,
             ),
-            PlaylistItem::new(AnimationEnum::CanalBoats, 24_000).with_label("Section 4 · Canal"),
-            PlaylistItem::new(AnimationEnum::Fireflies, 16_000),
+            PlaylistItem::new(AnimationEnum::CanalBoats, 16_000).with_label("Section 4 · Canal Boats"),
+            PlaylistItem::new(AnimationEnum::MillBuildings, 10_000).with_label("Section 4 · Mill Buildings"),
+            PlaylistItem::new(AnimationEnum::SpinningWheel, 10_000).with_label("Section 4 · Spinning Wheel"),
+            PlaylistItem::new(AnimationEnum::CircusTent, 10_000).with_label("Section 4 · Circus · Acrobat"),
+            PlaylistItem::new(AnimationEnum::Elephants, 10_000).with_label("Section 4 · Colourful Elephants"),
             // ── Close ─────────────────────────────────────────────────────
             PlaylistItem::new(
                 AnimationEnum::CenteredTitle("Leigh".to_string(), "Hackspace".to_string()),
@@ -216,7 +247,7 @@ impl Playlist {
             ),
             PlaylistItem::new(
                 AnimationEnum::ScrollingMessage("Light Up Leigh with Leigh Hackspace".to_string()),
-                14_000,
+                12_000,
             )
             .with_label("Banner"),
         ]
@@ -293,6 +324,8 @@ impl Playlist {
     pub fn restart_current(&mut self) -> Option<(Box<dyn Animation>, PlaylistItem)> {
         let index = self.current_index.max(0) as usize;
 
-        self.list.get(index).map(|(animation, item)| (animation.clone(), item.clone()))
+        self.list
+            .get(index)
+            .map(|(animation, item)| (animation.clone(), item.clone()))
     }
 }

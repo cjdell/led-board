@@ -29,6 +29,23 @@ fn main() {
     // `memory.x` is changed.
     println!("cargo:rerun-if-changed=memory.x");
 
+    // Build-specific IMAGE_DEF version. The A/B boot ROM compares this
+    // version when both partitions are valid; a fixed version makes every
+    // OTA look "the same" and the ROM keeps booting the current slot.
+    let build_version = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(1);
+
+    File::create(out.join("image_version.rs"))
+        .unwrap()
+        .write_all(format!("pub const IMAGE_VERSION: u32 = {build_version};\n").as_bytes())
+        .unwrap();
+
+    // Refresh the version on every build (same trick as led_core/build.rs:
+    // a path that never exists makes the script run each time).
+    println!("cargo:rerun-if-changed=.always-rerun");
+
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");

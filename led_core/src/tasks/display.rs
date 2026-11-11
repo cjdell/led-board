@@ -14,15 +14,23 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use animations::{Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit};
+use animations::{
+    Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit,
+};
 use embedded_graphics::pixelcolor::Rgb888;
 
 use crate::info;
-use crate::led_screen::{LedScreen, Ws2812ParallelDriver, PIXELS_PER_STRIP};
+use crate::led_screen::{LedScreen, PIXELS_PER_STRIP, Ws2812ParallelDriver};
 use crate::types::{
-    BoardStatus, DisplayWorkerMessage, DisplayWorkerReceiver, PlaylistInfo, PlaylistSource, PlaylistWatchSender,
-    Playing, StatusWatchSender,
+    BoardStatus, DisplayWorkerMessage, DisplayWorkerReceiver, Playing, PlaylistInfo, PlaylistSource,
+    PlaylistWatchSender, StatusWatchSender,
 };
+
+/// True when a timed status card has outlived its timeout. `timeout_ms == 0`
+/// means "no timeout" (the original `Status` message); anything else clears.
+pub fn status_due(elapsed_ms: u32, timeout_ms: u32) -> bool {
+    timeout_ms > 0 && elapsed_ms >= timeout_ms
+}
 
 pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     receiver: DisplayWorkerReceiver,
@@ -60,7 +68,11 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     let splash_start = embassy_time::Instant::now();
     while splash_start.elapsed() < embassy_time::Duration::from_millis(1_800) {
         buffer_1.buffer.fill(Rgb888::new(0x00, 0x00, 0x10));
-        splash.draw(splash_start.elapsed().as_millis() as u32, &AnimationParams::default(), &mut buffer_1);
+        splash.draw(
+            splash_start.elapsed().as_millis() as u32,
+            &AnimationParams::default(),
+            &mut buffer_1,
+        );
         apply_power_limit(&mut buffer_1, 0.1);
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;
@@ -85,8 +97,9 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
     let mut power_limit = 0.1f32;
     // Status-screen mode: when set, the animation is drawn over the still
-    // advancing playlist until StatusClear (see DisplayWorkerMessage).
-    let mut status_screen: Option<(AnimationEnum, u32)> = None;
+    // advancing playlist until StatusClear or its timeout (see
+    // DisplayWorkerMessage::StatusTimed).
+    let mut status_screen: Option<(AnimationEnum, u32, u32)> = None;
     // The preview override's enum value (for now-playing metadata — the
     // runner holds the type-erased box, which cannot describe itself).
     let mut override_meta: Option<(AnimationEnum, u32)> = None;
@@ -128,7 +141,10 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
                 }
                 DisplayWorkerMessage::Playlist { items, source } => {
                     if items.is_empty() {
-                        info!("Update playlist: built-in default ({} items)", Playlist::get_default_playlist_data().len());
+                        info!(
+                            "Update playlist: built-in default ({} items)",
+                            Playlist::get_default_playlist_data().len()
+                        );
                         let fallback = Playlist::get_default_playlist_data();
                         runner.update_playlist(Playlist::new(fallback));
                         playlist_source = PlaylistSource::Default;
@@ -178,7 +194,12 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
                 }
                 DisplayWorkerMessage::Status(animation) => {
                     info!("Status screen");
-                    status_screen = Some((animation, 0));
+                    status_screen = Some((animation, 0, 0));
+                    dirty = true;
+                }
+                DisplayWorkerMessage::StatusTimed(animation, timeout_ms) => {
+                    info!("Status screen ({} ms)", timeout_ms);
+                    status_screen = Some((animation, 0, timeout_ms));
                     dirty = true;
                 }
                 DisplayWorkerMessage::StatusClear => {
@@ -193,9 +214,16 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 
         runner.update(delta_ms, &mut buffer_1, &mut buffer_2);
 
-        if let Some((animation, ms)) = status_screen.as_mut() {
+        if let Some((animation, ms, timeout_ms)) = status_screen.as_mut() {
             *ms += delta_ms;
-            animation.draw(*ms, &AnimationParams::default(), &mut buffer_1);
+
+            if status_due(*ms, *timeout_ms) {
+                info!("Status screen timed out after {} ms", timeout_ms);
+                status_screen = None;
+                dirty = true;
+            } else {
+                animation.draw(*ms, &AnimationParams::default(), &mut buffer_1);
+            }
         }
 
         apply_power_limit(&mut buffer_1, power_limit);
@@ -291,7 +319,7 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
 async fn publish_status(
     status_tx: &StatusWatchSender,
     runner_status: &animations::RunnerStatus,
-    status_screen: &Option<(AnimationEnum, u32)>,
+    status_screen: &Option<(AnimationEnum, u32, u32)>,
     override_meta: &Option<(AnimationEnum, u32)>,
     paused: bool,
     streaming: bool,
@@ -300,7 +328,7 @@ async fn publish_status(
     started: embassy_time::Instant,
 ) {
     let now_playing = match (status_screen, override_meta) {
-        (Some((animation, ms)), _) => Playing {
+        (Some((animation, ms, _)), _) => Playing {
             kind: String::from(animation.kind_name()),
             title: String::from("Status"),
             animation: animation.clone(),

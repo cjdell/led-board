@@ -21,9 +21,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use defmt::Encoder;
+use embassy_futures::select::{Either, select};
 use embassy_net::{Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, rwlock::RwLock};
-use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::Write as _;
 
@@ -53,7 +53,12 @@ unsafe impl defmt::Logger for TcpLogger {
 pub static TCP_SENDER: TcpSender = TcpSender::new();
 
 pub struct TcpSender {
-    channel: Channel<CriticalSectionRawMutex, Vec<u8>, 2000>,
+    // Small on purpose: with no defmt-print client attached nothing drains
+    // this channel, and every queued frame is a heap Vec. 2000 slots pinned
+    // ~110 KB of the 192 KB heap (measured: free dropped 152 KB -> 35 KB),
+    // which is enough to make later allocations fail on a board that runs
+    // for days. 256 bounds it to ~15 KB; older boot lines may be dropped.
+    channel: Channel<CriticalSectionRawMutex, Vec<u8>, 256>,
     encoder: RwLock<CriticalSectionRawMutex, Encoder>,
 }
 

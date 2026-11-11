@@ -32,10 +32,7 @@ fn ascii(buf: &BufferTargetRgb888) -> String {
 }
 
 fn coverage(buf: &BufferTargetRgb888) -> usize {
-    buf.buffer
-        .iter()
-        .filter(|p| luminance(p) > 30)
-        .count()
+    buf.buffer.iter().filter(|p| luminance(p) > 30).count()
 }
 
 fn festival_anims() -> Vec<(&'static str, AnimationEnum)> {
@@ -49,7 +46,26 @@ fn festival_anims() -> Vec<(&'static str, AnimationEnum)> {
         ("Fireflies", Fireflies),
         ("VinylSpin", VinylSpin),
         ("CanalBoats", CanalBoats),
-        ("ScrollingMessage", ScrollingMessage("Light Up Leigh with Leigh Hackspace".into())),
+        ("Robin", Robin),
+        ("Owl", Owl),
+        ("Deer", Deer),
+        ("SnowLeopard", SnowLeopard),
+        ("FatherChristmas", FatherChristmas),
+        ("FrostFairies", FrostFairies),
+        ("SnowGlobe", SnowGlobe),
+        ("Penguins", Penguins),
+        ("Reindeer", Reindeer),
+        ("ElectricGuitar", ElectricGuitar),
+        ("MadameRatcliffe", MadameRatcliffe),
+        ("Parrot", Parrot),
+        ("CircusTent", CircusTent),
+        ("Elephants", Elephants),
+        ("SpinningWheel", SpinningWheel),
+        ("MillBuildings", MillBuildings),
+        (
+            "ScrollingMessage",
+            ScrollingMessage("Light Up Leigh with Leigh Hackspace".into()),
+        ),
     ]
 }
 
@@ -78,7 +94,7 @@ fn default_playlist_serialises_and_loops() {
     let total_s: u32 = playlist.iter().map(|item| item.duration_ms / 1000).sum();
     println!("festival loop: {} items, {total_s}s", playlist.len());
     println!("{json}");
-    assert!((180..300).contains(&total_s), "loop should stay near 4 minutes");
+    assert!((300..380).contains(&total_s), "loop should stay near five minutes");
 }
 
 #[test]
@@ -127,7 +143,32 @@ fn playlist_cursor_wraps_and_jumps() {
 #[test]
 fn animation_library_advertises_new_variants() {
     let json = serde_json::to_string(&animations::Playlist::get_available()).unwrap();
-    for name in ["Aurora", "Starfield", "Snowfall", "FallingLeaves", "Fireflies", "VinylSpin", "CanalBoats", "CenteredTitle"] {
+    for name in [
+        "Aurora",
+        "Starfield",
+        "Snowfall",
+        "FallingLeaves",
+        "Fireflies",
+        "VinylSpin",
+        "CanalBoats",
+        "Robin",
+        "Owl",
+        "Deer",
+        "SnowLeopard",
+        "FatherChristmas",
+        "FrostFairies",
+        "SnowGlobe",
+        "Penguins",
+        "Reindeer",
+        "ElectricGuitar",
+        "MadameRatcliffe",
+        "Parrot",
+        "CircusTent",
+        "Elephants",
+        "SpinningWheel",
+        "MillBuildings",
+        "CenteredTitle",
+    ] {
         assert!(json.contains(name), "{name} missing from /api/info/animations");
     }
 }

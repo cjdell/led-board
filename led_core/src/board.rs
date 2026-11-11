@@ -76,6 +76,12 @@ pub trait Board: Clone + 'static {
     /// Hard restart the machine (sim: exit the process).
     fn reboot(&self) -> impl Future<Output = ()>;
 
+    /// Restart into the ROM USB bootloader (BOOTSEL). This is the recovery
+    /// path that does not depend on the application's USB CDC stack being
+    /// alive: the ROM re-enumerates as `2E8A:000F`, which `picotool` can see.
+    /// Sim: exit with a message.
+    fn bootsel(&self) -> impl Future<Output = ()>;
+
     /// Stop the watchdog so a long flash operation cannot reset the chip
     /// mid-write (sim: no-op).
     fn stop_watchdog(&self);

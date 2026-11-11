@@ -7,12 +7,12 @@ use crate::{
         SharedWatchdog,
     },
 };
-use animations::AnimationEnum;
 use alloc::{
     format,
     string::{String, ToString as _},
     vec::Vec,
 };
+use animations::AnimationEnum;
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use core::sync::atomic::{AtomicU32, Ordering};
 use cyw43::{Control, JoinOptions, PowerManagementMode, SpiBus, aligned_bytes};
@@ -64,8 +64,7 @@ unsafe impl<T> Sync for Shared<T> {}
 /// the radio without a C3 relay. `wifi_task` parks it here while idle and
 /// borrows it for each join attempt, so contention is a scan racing a join —
 /// which the provisioning flow (AP fallback, nobody joining) never creates.
-pub static WIFI_CONTROL: Shared<RwLock<CriticalSectionRawMutex, Option<Control<'static>>>> =
-    Shared(RwLock::new(None));
+pub static WIFI_CONTROL: Shared<RwLock<CriticalSectionRawMutex, Option<Control<'static>>>> = Shared(RwLock::new(None));
 
 /// Native scan for the wifi build's `/api/wifi`: dedupe by SSID (strongest
 /// signal wins), sorted by RSSI, capped to keep the JSON inside the web-task
@@ -274,6 +273,9 @@ pub async fn wifi_task(
 ) {
     let join_timeout = Duration::from_secs(10);
     let dhcp_timeout = Duration::from_secs(15);
+    // A flaky cyw43 often misses the first association attempt. Keep cycling
+    // all known networks before giving up and opening the provisioning AP.
+    const JOIN_PASSES: u32 = 5;
 
     // Park the handle in the shared static; every use below borrows it from
     // there so the http provisioning handlers can reach it too.
@@ -287,17 +289,30 @@ pub async fn wifi_task(
         async {
             if let WifiMode::Station = config.wifi_mode {
                 let mut has_connected_once = false;
+                let mut passes = 0u32;
 
                 'station: loop {
+                    passes += 1;
+
+                    if passes > 1 {
+                        crate::tasks::usb_dbg::log(format_args!("wifi: retry pass {passes}/{JOIN_PASSES}"));
+                        display
+                            .try_send(DisplayWorkerMessage::StatusTimed(
+                                AnimationEnum::CenteredTitle(
+                                    "wifi".to_string(),
+                                    format!("pass {passes}/{JOIN_PASSES}"),
+                                ),
+                                10_000,
+                            ))
+                            .ok();
+                    }
+
                     for network in &config.known_wifi_networks {
                         info!("Starting WiFi connection sequence to: {}", network.ssid.as_str());
                         // Console breadcrumb: visible over USB even when the
                         // network (and thus defmt-TCP) is dead — this is the
                         // venue join-forensics channel.
-                        crate::tasks::usb_dbg::log(format_args!(
-                            "wifi: joining \"{}\"...",
-                            network.ssid.as_str()
-                        ));
+                        crate::tasks::usb_dbg::log(format_args!("wifi: joining \"{}\"...", network.ssid.as_str()));
 
                         let start = embassy_time::Instant::now();
 
@@ -306,10 +321,10 @@ pub async fn wifi_task(
 
                         let short_ssid: String = network.ssid.chars().take(10).collect();
                         display
-                            .try_send(DisplayWorkerMessage::Status(AnimationEnum::CenteredTitle(
-                                "wifi".to_string(),
-                                format!("{short_ssid}?"),
-                            )))
+                            .try_send(DisplayWorkerMessage::StatusTimed(
+                                AnimationEnum::CenteredTitle("wifi".to_string(), format!("{short_ssid}?")),
+                                10_000,
+                            ))
                             .ok();
 
                         loop {
@@ -332,10 +347,10 @@ pub async fn wifi_task(
                                         attempts
                                     ));
                                     display
-                                        .try_send(DisplayWorkerMessage::Status(AnimationEnum::CenteredTitle(
-                                            "wifi".to_string(),
-                                            "leased?".to_string(),
-                                        )))
+                                        .try_send(DisplayWorkerMessage::StatusTimed(
+                                            AnimationEnum::CenteredTitle("wifi".to_string(), "leased?".to_string()),
+                                            10_000,
+                                        ))
                                         .ok();
                                     let mut status = JOIN_STATUS.lock().await;
                                     status.joined_ssid = Some(network.ssid.clone());
@@ -358,9 +373,7 @@ pub async fn wifi_task(
                                         break;
                                     }
                                     info!("Join attempt failed: {}, retrying...", e);
-                                    crate::tasks::usb_dbg::log(format_args!(
-                                        "wifi: attempt {attempts} failed: {e:?}"
-                                    ));
+                                    crate::tasks::usb_dbg::log(format_args!("wifi: attempt {attempts} failed: {e:?}"));
                                     Timer::after_millis(500).await;
                                 }
                             }
@@ -391,13 +404,15 @@ pub async fn wifi_task(
                                         "wifi: DHCP timeout, round {round}/3 (staying on)"
                                     ));
                                     display
-                                        .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
-                                            "wifi".to_string(),
-                                            format!("no lease {round}/3"),
-                                        )))
+                                        .try_send(DisplayWorkerMessage::StatusTimed(
+                                            AnimationEnum::StatusCard(
+                                                "wifi".to_string(),
+                                                format!("no lease {round}/3"),
+                                            ),
+                                            10_000,
+                                        ))
                                         .ok();
-                                    JOIN_STATUS.lock().await.last_error =
-                                        Some(format!("DHCP timeout (round {round})"));
+                                    JOIN_STATUS.lock().await.last_error = Some(format!("DHCP timeout (round {round})"));
                                 }
                             }
                         }
@@ -439,10 +454,10 @@ pub async fn wifi_task(
                             warn!("WiFi: link lost, starting reconnection sequence...");
                             crate::tasks::usb_dbg::log(format_args!("wifi: link lost — reconnecting"));
                             display
-                                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
-                                    "wifi".to_string(),
-                                    "link lost".to_string(),
-                                )))
+                                .try_send(DisplayWorkerMessage::StatusTimed(
+                                    AnimationEnum::StatusCard("wifi".to_string(), "link lost".to_string()),
+                                    10_000,
+                                ))
                                 .ok();
                             break;
                         }
@@ -457,6 +472,23 @@ pub async fn wifi_task(
                         continue 'station;
                     }
 
+                    if passes < JOIN_PASSES {
+                        crate::tasks::usb_dbg::log(format_args!(
+                            "wifi: no known network on pass {passes}/{JOIN_PASSES}, retrying"
+                        ));
+                        display
+                            .try_send(DisplayWorkerMessage::StatusTimed(
+                                AnimationEnum::CenteredTitle(
+                                    "wifi".to_string(),
+                                    format!("retry {passes}/{JOIN_PASSES}"),
+                                ),
+                                10_000,
+                            ))
+                            .ok();
+                        Timer::after(Duration::from_secs(1)).await;
+                        continue 'station;
+                    }
+
                     break 'station;
                 }
             }
@@ -465,10 +497,10 @@ pub async fn wifi_task(
 
             crate::tasks::usb_dbg::log(format_args!("wifi: starting AP fallback (cy43 start_ap_open)..."));
             display
-                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
-                    "wifi".to_string(),
-                    "AP mode...".to_string(),
-                )))
+                .try_send(DisplayWorkerMessage::StatusTimed(
+                    AnimationEnum::StatusCard("wifi".to_string(), "AP mode...".to_string()),
+                    15_000,
+                ))
                 .ok();
 
             {
@@ -480,10 +512,10 @@ pub async fn wifi_task(
 
             crate::tasks::usb_dbg::log(format_args!("wifi: AP fallback \"LED Board\" up (192.168.1.1)"));
             display
-                .try_send(DisplayWorkerMessage::Status(AnimationEnum::StatusCard(
-                    "AP: LED Board".to_string(),
-                    "192.168.1.1".to_string(),
-                )))
+                .try_send(DisplayWorkerMessage::StatusTimed(
+                    AnimationEnum::StatusCard("AP: LED Board".to_string(), "192.168.1.1".to_string()),
+                    15_000,
+                ))
                 .ok();
 
             JOIN_STATUS.lock().await.ap_fallback = true;

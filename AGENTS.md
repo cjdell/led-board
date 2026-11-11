@@ -156,7 +156,24 @@ picotool reboot -a -f            # no vid flags needed for RP2350 Boot (2E8A:000
   but picotool says "no accessible devices", the ROM is wedged — power-cycle
   the Pico (hub power-cycle if both micros vanished from `ioreg -p IOUSB`).
 
-OTA over the network: `just ota` (builds, then `curl POST /api/ota`).
+OTA over the network: `just ota` (builds, then a paced `curl POST /api/ota`).
+
+**Recovery hatches (Nov 2026, no BOOTSEL button needed):**
+- `POST /api/bootsel` reboots into the ROM bootloader over the network
+  (`Board::bootsel`, `rom_data::reset_to_usb_boot`). Works whenever the app is
+  alive.
+- `just bootsel` (the vendor ResetIface in `usb_dbg`) was verified to work
+  **even when the executor is wedged** — the USB stack still services the
+  control request. Try it before asking for a physical BOOTSEL.
+- `no_display` feature: boots WiFi + web + USB and never starts the panel
+  worker (`cargo objcopy … --features wifi,defmt_tcp,console,no_display`).
+  The safety image when a display/DMA fault would otherwise hang boot.
+- The WebSocket/status feeds stay at defaults in that image (no display
+  worker), so `/api/status` can time out — `/api/version`, `/api/ota`, and
+  `/api/bootsel` are the ones that matter.
+- **Do not enable `usb_core1`**: moving the console to core 1 froze the
+  display path right after the first frame (reproduced twice; bisected — the
+  same code on core 0 runs at 90 fps). The feature exists only as opt-in.
 
 **OTA reboot traps (datasheet 5.4.8.24 / RP2350, verified on the bench):**
 `rom_data::reboot()` is *asynchronous* — it arms the **watchdog** and returns;
@@ -166,13 +183,46 @@ Consequences, both of which silently left the board running the old image:
    reloads the counter and **cancels the pending reboot**. Reboot paths set
    `rp235x_ota::REBOOTING`; feeders must skip feeding while it is set.
 2. For `REBOOT_TYPE_FLASH_UPDATE` (0x4), `p0` is *the start address of the
-   updated flash region*, and only a match with a partition/slot start makes
-   the ROM prefer it. `Partition::get_first_last_bytes()` already returns an
-   XIP address — adding `FLASH_BASE` again (0x10000000 + 0x10001000 =
-   0x20001000) matched nothing.
+   updated flash region*, compared against the partition table's **storage**
+   sector addresses (A = 0x1000, B = 0x100000 — `get_first_last_bytes()`
+   already returns these; do **not** add `FLASH_BASE`/XIP). Passing an XIP
+   address (0x10100000) matches nothing, so the ROM normal-boots the old slot.
 Working signature: `reboot(0x4 | 0x100, 1000, partition_start_addr, 0)`; the
 reset shows as `Reset Reason: Some(TimedOut)` followed by
 `Rp235xOta: Marking this firmware as good...`.
+
+**OTA upload reliability (Nov 2026, all four bugs fixed):**
+- `embassy_rp::flash::blocking_write` **hangs** on sub-page tails (<256 B):
+  the program routine never returns with interrupts off, and the watchdog
+  resets 15 s later (`TimedOut`, no panic, B's first sector erased). Fix:
+  `Rp235xOta::write_chunk` always stages a full 0xFF-padded 4096-byte sector
+  and advances `position` by the real byte count, so the SHA still covers the
+  image only. Never hand `blocking_write` a short chunk.
+- The handler must **never call `read` past `Content-Length`**: picoserve's
+  body reader blocks on the socket after the declared body is consumed when
+  the client keeps the connection alive, which wedged a web task forever.
+  Bound every read loop by `reader.content_length()`.
+- Flash sectors erase with interrupts off for ~30 ms. Pace uploads: server
+  yields 20 ms per sector, and the *client* must be rate-limited —
+  `curl --limit-rate 24k` (`just ota` does this). An unpaced 600 KB POST
+  overruns the cyw43 RX path in this embassy pin and the TCP stream stalls
+  after ~12 KB, permanently.
+- **`z=raw` (DEFLATE upload) is disabled**: `InflateState` is ~44 KB and its
+  constructor builds it on the stack before boxing, which resets the chip
+  before any log can escape (looks like a watchdog reset, no panic record).
+  POST the raw image. Revisit only with a static/boxed state allocated off
+  the task stack.
+- `just ota` posts `tmp/ws.bin` raw at 24 KB/s: ~28 s for a 666 KB image.
+
+**Crash forensics**: `console` builds keep the last panic/hard-fault text in
+`.uninit` RAM (survives a reset) and print `prev boot: …` on the next start.
+`usb_dbg`'s `HardFault` handler records a marker too — a stack overflow
+otherwise just hangs and the watchdog blames itself.
+
+**Heap telemetry**: `watchdog_runner` logs `heap: free=… used=…` over the USB
+ring every 30 s. Steady state with display + 5 web tasks is ~47 KB free of
+192 KB. `defmt_tcp`'s frame channel is 256 slots (was 2000): with no
+`defmt-print` client nothing drains it and 2000 queued `Vec`s pinned ~110 KB.
 
 Keep `tmp/ws.elf` (copy of the release ELF) for `probe-rs attach`/`defmt-print`.
 
@@ -305,18 +355,19 @@ Radio-link wiring and the C3/C6 side of the link:
 - **wifi web tasks use 8 KB TX / 4 KB RX picoserve buffers** (was 1 KB — that
   was a buffer/RTT cap around 1 Mbit/s regardless of bus speed). Heap is fixed
   at 192 KB (`embedded_alloc::init!`) — web pool × buffers must fit in it.
-- **The app slot is 508 K (`memory.x`), not 4 MB** — `wifi,defmt_tcp,console`
-  overflows (≈23 KB even after halving that build's heap buffers, which don't
-  change flash anyway; and join-loop logs go through the defmt-TCP logger, so
-  the console would show nothing extra — the diagnostic build is dropped).
+- **The app slot is 1020 K (`memory.x`), not 4 MB** — the A/B partition table
+  (`partitions.json`) now gives each slot `0xFF000` (1,044,480 B) and the linker
+  region matches. The 508 K slot was the old constraint; it is gone. The
+  partition table is physical flash state, so **run `just setup_flash` once
+  after pulling this change** (A/B start/size changed) before flashing or OTAing
+  the larger image — an old 508 K table will reject anything over 508 K.
   Wifi builds are `wifi,defmt_tcp` and logs come via
   `defmt-print ... tcp --port 19021`. `scripts/stress_wifi.sh` captures it and
   reports per-load throughput with the stress.sh acceptance bar.
-- **Bundle size note (Nov 2026, control-deck rewrite)**: the SPA dropped
-  Bootstrap entirely; `web/compile.sh` produces a **40,566 B** gzipped
-  single-file bundle (was 69,786 B clean / 73,541 B with the old truncate
-  bug — see `web/compress.ts` history). Re-run `web/compile.sh` before
-  flashing UI changes; the sim embeds the same gz.
+- **Bundle size note (Nov 2026, festival scene set)**: `web/compile.sh` now
+  produces a **45,790 B** gzipped single-file bundle (40,566 B before the new
+  animation previews). Re-run `web/compile.sh` before flashing UI changes; the
+  sim embeds the same gz.
 - **Wi-Fi acceptance PASSED (Nov 2026)**: `HOST=http://<ip>/ ./scripts/stress_wifi.sh`
   → 15/15 identical 73,541 B loads (pre-truncate-fix number; loads are now
   40,566 B after the UI rewrite — re-run acceptance at the new size), one sha256 group, 0 curl failures, 0 guard
@@ -337,6 +388,14 @@ Radio-link wiring and the C3/C6 side of the link:
   `firmware/src/tasks/http/wifi.rs`. `add_known_wifi_network` always sets
   `wifi_mode: Station` (pulls an AP-mode board back to joining on reboot).
   Forget takes effect next boot — the join loop reads config once at boot.
+- **Flaky-cyw43 join policy (Nov 2026)**: the station phase now makes **five
+  passes** over `config.known_wifi_networks` (10 s per network, 500 ms between
+  attempts) before falling back to the "LED Board" AP; each pass logs/increments
+  the old attempt counters. Status cards are `DisplayWorkerMessage::StatusTimed`
+  now: join/lease/link-lost cards clear after 10 s, AP cards after 15 s, so the
+  panel always returns to the festival playlist even when the network never
+  comes up. The AP itself stays up for provisioning; `/api/join-status` still
+  reports `ap_fallback`.
 - **esp-hal stays at tag `esp-hal-v1.1.2`**; v1.2.0 exists (Sep 2026) but the
   port is a full radio session with the bench online: typed `Ssid`/`Password` +
   `AuthenticationMethodConfig` configs, `DmaAlignedMut` descriptor buffers,
@@ -345,24 +404,33 @@ Radio-link wiring and the C3/C6 side of the link:
 
 ## Firmware sizes (release, Nov 2026)
 
-Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (508 K slot). After the led-core
+Pico wifi ≈ 484 KB, Pico radio ≈ 451 KB (old 508 K slot). After the led-core
 refactor + clean bundle: radio 447,144 B, wifi 485,796 B. After the control-
-deck UI rewrite (40.5 KB gz bundle): **wifi 500,288 B (~20 K headroom), radio
-423,812 B**, and `radio,defmt_tcp,console` fits again too. The `wifi,defmt_tcp`
-overflow that briefly appeared mid-work was absorbed by the Bootstrap-less
-bundle — if the SPA grows past ~55 KB gz, wifi starts busting the slot again.
+deck UI rewrite (40.5 KB gz bundle): **wifi 500,288 B, radio 423,812 B**.
 After the frame-pipeline work (pipelined DMA driver, `animations` crate
 `opt-level = "s"` — deliberately per-crate, `opt-level = 2` costs +7.6 K):
-**wifi 504,056 B (~16 K headroom), radio 425,468 B**. Version-stamp
-build-info + boot splash and the latch-safe driver revision (in-band pad):
-**wifi 507,080 B (~13 K headroom), radio 428,964 B** — wifi is the tight
-one again if the SPA or animations grow. The enforced 1.5 ms latch gap
-(SK6812-clone reset): **wifi 507,180 B, radio 429,100 B**.
+**wifi 504,056 B, radio 425,468 B**. Version-stamp build-info + boot splash
+and the latch-safe driver revision: **wifi 507,180 B, radio 429,100 B** (the
+old 508 K slot was the hard ceiling here). After the Nov 2026 festival-scene
+set + enlarged 1020 K A/B slots: **wifi 573,428 B (~471 K headroom), radio
+532,016 B**, and the bench **wifi,defmt_tcp,console** image is 663,000 B
+(45.8 KB gz bundle). After the Nov 2026 OTA/recovery work (crash log,
+sector-padded OTA, heap telemetry, paced upload): **wifi 576,696 B, bench
+console 667,480 B**. The old wifi tightness is gone; the next ceiling is the
+1020 K slot, not the SPA. Console builds now fit comfortably again.
 C3 ≈ 690 KB (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure
 anywhere else.
 
 ## Protocol notes
 
+- **Panel gamma (Nov 2026)**: animation buffers are authored in sRGB, but
+  SK6812-class strips are linear-light devices. Hardware builds now
+  gamma-encode (γ 2.0) inside `apply_power_limit` (the `std` sim skips it
+  because a monitor already applies sRGB). The same function sums the *PWM*
+  values for the power limit, so a 10% limit no longer washes the mid-tones
+  out. The festival scenes are authored with dark backgrounds and bright
+  subjects directly; if they look too bright on the panel, fix the authored
+  colours — do not stack another gamma/contrast stage.
 - **Panel frame pipeline (Nov 2026)**: `ws2812p::write` is pipelined fire-and-
   forget — transpose into the idle DMA buffer (overlaps the previous frame on
   the wire), busy-poll the DMA channel for completion, **wait the enforced

@@ -13,7 +13,7 @@
       "name": "A",
       "id": 0,
       "start": "0x1000",
-      "size": "0x7F000",
+      "size": "0xFF000",
       "families": ["rp2350-arm-s", "rp2350-arm-ns", "rp2350-riscv", "absolute"],
       "permissions": {
         "secure": "rw",
@@ -24,8 +24,8 @@
     {
       "name": "B",
       "id": 1,
-      "start": "0x80000",
-      "size": "0x80000",
+      "start": "0x100000",
+      "size": "0xFF000",
       "families": ["rp2350-arm-s", "rp2350-arm-ns", "rp2350-riscv", "absolute"],
       "permissions": {
         "secure": "rw",

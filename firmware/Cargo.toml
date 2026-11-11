@@ -12,6 +12,15 @@ usb_ethernet = []
 ppp = []
 radio = []
 console = []
+# Put the USB console on core 1 (display stays on core 0). Experimental:
+# the 20:15/20:47 builds hung the display path right after the first frame
+# with this on, so it is opt-in until that is understood.
+usb_core1 = []
+# Recovery/diagnostic image: boot WiFi + web + USB without starting the panel
+# worker. If a display/DMA fault would otherwise hang the boot before the
+# network, this image still gives us `/api/ota`, `/api/bootsel`, and the USB
+# console.
+no_display = []
 # Diagnostic builds: drop the embedded web bundle so `wifi,console` fits the
 # 508 K app slot.
 no_web = ["led-core/no_web"]
@@ -89,6 +98,7 @@ embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", features = [
     "critical-section-impl",
     "rp235xa",
     "binary-info",
+    "imagedef-none",
 ] }
 embassy-net = { git = "https://github.com/embassy-rs/embassy.git", features = [
     "defmt",

@@ -19,6 +19,7 @@
 extern crate alloc;
 
 use embassy_executor::Spawner;
+use embassy_rp::block::*;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::pio::InterruptHandler;
 use embassy_rp::pio::Pio;
@@ -34,6 +35,21 @@ use firmware::ws2812p::{PioWs2812ParallelDriver, PioWs2812ParallelProgram};
 use led_core::led_screen::{LedScreen, TOTAL_PIXELS};
 use led_core::tasks::display;
 use led_core::types::{DisplayWorkerChannel, PlaylistWatch, StatusWatch};
+
+include!(concat!(env!("OUT_DIR"), "/image_version.rs"));
+
+#[unsafe(link_section = ".start_block")]
+#[used]
+pub static IMAGE_DEF: Block<3> = Block::new([
+    {
+        let value =
+            IMAGE_TYPE_EXE | IMAGE_TYPE_EXE_CHIP_RP2350 | IMAGE_TYPE_EXE_CPU_ARM | IMAGE_TYPE_EXE_TYPE_SECURITY_S;
+
+        item_generic_1bs(value, 1, ITEM_1BS_IMAGE_TYPE)
+    },
+    item_generic_1bs(0, 2, ITEM_1BS_VERSION),
+    IMAGE_VERSION,
+]);
 
 bind_interrupts!(struct Irqs {
     PIO1_IRQ_0 => InterruptHandler<PIO1>;
@@ -123,13 +139,18 @@ async fn main(spawner: Spawner) {
         alloc::boxed::Box::leak(alloc::boxed::Box::new(DisplayWorkerChannel::new()));
 
     let status_watch: &'static StatusWatch = alloc::boxed::Box::leak(alloc::boxed::Box::new(StatusWatch::new()));
-    let playlist_watch: &'static PlaylistWatch =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new(PlaylistWatch::new()));
+    let playlist_watch: &'static PlaylistWatch = alloc::boxed::Box::leak(alloc::boxed::Box::new(PlaylistWatch::new()));
 
     // Liveness blink on the onboard LED, independent of the display loop.
     spawner.spawn(alive_task(alive).unwrap());
 
-    display::run(channel.receiver(), screen, status_watch.sender(), playlist_watch.sender()).await
+    display::run(
+        channel.receiver(),
+        screen,
+        status_watch.sender(),
+        playlist_watch.sender(),
+    )
+    .await
 }
 
 #[embassy_executor::task]
