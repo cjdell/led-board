@@ -99,15 +99,17 @@ const BITS: usize = 24;
 /// every buffer. A word is 4 bit periods = 5 µs of guaranteed LOW on the
 /// wire between frames — that is the WS2812 reset pulse (tRESET ≥ 50 µs)
 /// and it cannot be skipped by CPU timing, only stretched (harmless).
-/// 16 words = 80 µs. (A `Timer`-based gap was tried first and broke the
-/// panel: see the program comment — the FIFO empties, and an `OUT` stall
-/// parks the pins HIGH, which the strips read as data.)
-const PAD_WORDS: usize = 16;
+/// Generous on purpose: SK6812-class clones (which art panels love) want
+/// 200-300 µs; 64 words ≈ 328 µs, ~3 % of the frame budget. (A
+/// `Timer`-based gap was tried first and broke the panel: see the program
+/// comment — the FIFO empties, and an `OUT` stall parks the pins HIGH,
+/// which the strips read as data.)
+const PAD_WORDS: usize = 64;
 
 /// Busy-poll interval while waiting for the in-flight frame to finish.
 /// Wake latency only *stretches* the in-band latch gap (the PULL parks the
 /// pins LOW meanwhile), so this costs frame rate, never correctness.
-const DMA_POLL_US: u64 = 100;
+const DMA_POLL_US: u64 = 50;
 
 /// Parallel WS2812 driver for 8 simultaneous strips, fully pipelined:
 /// while frame N is on the wire, `write` for frame N+1 transposes into
