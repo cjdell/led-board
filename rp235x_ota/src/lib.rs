@@ -246,13 +246,27 @@ where
             // "the address of the start of the region of flash that was
             // updated. If this address matches the start address of a
             // partition or slot, then that partition or slot is treated
-            // preferentially during boot". `start_addr` is already an XIP
-            // address, so adding FLASH_BASE again (0x10000000 + 0x10001000 =
-            // 0x20001000) matched nothing and the ROM booted the old slot.
+            // preferentially during boot". The ROM speaks XIP addresses, so
+            // p0 must be 0x1008xxxx-ish — but this board's
+            // `Partition::get_first_last_bytes()` (via the UF2-target-partition
+            // ROM call) returns RAW offsets (`Start: 0x80000` in the field
+            // log, 2026-11-11), and raw p0 silently matched nothing: the ROM
+            // rebooted into the SAME slot forever. Normalise instead of
+            // assuming either way (the original bug was double-adding
+            // FLASH_BASE to an already-XIP address).
+            const XIP_BASE: u32 = 0x1000_0000;
+            let p0 = if self.start_addr >= XIP_BASE {
+                self.start_addr
+            } else {
+                XIP_BASE + self.start_addr
+            };
+
+            info!("Rp235xOta: reboot2 p0={:#010x} (region start {:#x})", p0, self.start_addr);
+
             rom_data::reboot(
                 REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
                 1_000,
-                self.start_addr,
+                p0,
                 0,
             );
 
