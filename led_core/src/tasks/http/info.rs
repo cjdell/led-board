@@ -1,10 +1,11 @@
-use crate::types::{PlaylistWatch, StatusWatch};
+use crate::types::{PlaylistWatch, StatusWatch, PANEL_FRAME};
 use animations::Playlist;
+use embedded_io_async::Write;
 use picoserve::{
     ResponseSent,
     io::Read,
     request::Request,
-    response::{IntoResponse, ResponseWriter, StatusCode},
+    response::{Content, IntoResponse, Response, ResponseWriter, StatusCode},
     routing::RequestHandlerService,
 };
 
@@ -95,6 +96,57 @@ impl RequestHandlerService<()> for GetPlaylistHandler {
         let json = receiver.try_get().unwrap_or_else(|| PLAYLIST_PLACEHOLDER.into());
 
         json_response!(req, writer, &json)
+    }
+}
+
+/// `GET /api/frame` — raw RGB888 (60×40×3 = 7200 B, row-major) snapshot of
+/// the live panel, straight from the display worker's buffer. Lets the UI
+/// mirror what the LEDs actually show instead of approximating it with the
+/// TypeScript painters. Streams from the mutex guard — no task-stack copy of
+/// the frame.
+pub struct GetFrameHandler {}
+
+impl GetFrameHandler {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl RequestHandlerService<()> for GetFrameHandler {
+    async fn call_request_handler_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _: &(),
+        _: (),
+        req: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let guard = PANEL_FRAME.lock().await;
+
+        Response::new(StatusCode::OK, FrameContent { rgb: &guard.rgb })
+            .with_headers([
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cache-Control", "no-store"),
+            ])
+            .write_to(req.body_connection.finalize().await?, writer)
+            .await
+    }
+}
+
+struct FrameContent<'a> {
+    rgb: &'a [u8],
+}
+
+impl Content for FrameContent<'_> {
+    fn content_type(&self) -> &'static str {
+        "application/octet-stream"
+    }
+
+    fn content_length(&self) -> usize {
+        self.rgb.len()
+    }
+
+    async fn write_content<W: Write>(self, writer: W) -> Result<(), W::Error> {
+        self.rgb.write_content(writer).await
     }
 }
 

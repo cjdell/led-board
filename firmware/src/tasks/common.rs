@@ -1,12 +1,20 @@
 use alloc::{format, string::String};
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use core::pin::pin;
+use crate::types::{EthernetSignal, EthernetSignalMessage};
 use defmt::*;
 use edge_mdns::{HostAnswersMdnsHandler, buf::VecBufAccess, domain::base::Ttl, io::MdnsIoError};
 use edge_nal::{UdpBind as _, UdpSplit as _};
 use edge_nal_embassy::UdpError;
+use embassy_futures::select::{Either, select};
 use embassy_net::Stack;
 use embassy_rp::{peripherals::TRNG, trng::Trng};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender, signal::Signal};
+use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    channel::Sender,
+    signal::Signal,
+    watch,
+};
 use embassy_time::{Duration, Timer};
 
 #[derive(Clone)]
@@ -77,38 +85,97 @@ pub async fn dhcp_task(stack: Stack<'static>, ap_ip_address: Ipv4Addr) {
     }
 }
 
+// ── mDNS responder ─────────────────────────────────────────────────────────
+//
+// The old shape spawned one responder once, with the IP of the very first
+// lease: DHCP re-assigns (rejoin after a flap, AP fallback) kept announcing
+// the stale address forever, and any UDP error ended `Mdns::run` — which the
+// task `.expect()`-ed, so `*.local` was dead until reboot. Now it is a
+// supervised session loop: every session binds fresh (that re-joins the
+// multicast group too — smoltcp memberships die with the link), serves the
+// *current* address, and the loop rebinds on every connection event, on a
+// dead/drifted config (self-check in `announce_ticker`), and on any IO error
+// with backoff. Announcements repeat at ¼ TTL so records survive lost
+// replies and refresh without waiting for a query.
+
+/// mDNS refresh cadence: ¼ of the answer TTL — several redundant announces
+/// per cache lifetime; the packets are tens of bytes.
+const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(15);
+const MDNS_TTL_SECS: u32 = 60;
+
+type EthernetSignalReceiver<'a> =
+    watch::Receiver<'a, CriticalSectionRawMutex, EthernetSignalMessage, 10>;
+
 #[embassy_executor::task]
-pub async fn mdns_task(stack: Stack<'static>, trng: Trng<'static, TRNG>, our_name: String, our_ip: Ipv4Addr) {
+pub async fn mdns_task(
+    stack: Stack<'static>,
+    mut trng: Trng<'static, TRNG>,
+    our_name: String,
+    ethernet_signal: &'static EthernetSignal,
+) {
     info!("mdns_task");
 
-    Timer::after(Duration::from_millis(1_000)).await;
+    let mut receiver = match ethernet_signal.receiver() {
+        Some(receiver) => receiver,
+        None => {
+            error!("mdns: no signal receiver slot left");
+            return;
+        }
+    };
 
-    mdns_runner(stack, trng, &our_name, our_ip)
-        .await
-        .expect("mdns_runner failed");
+    loop {
+        // Wait for an IPv4 address — current or next event.
+        let ip = loop {
+            let msg = match receiver.try_get() {
+                Some(msg) => msg,
+                None => receiver.changed().await,
+            };
+
+            match msg {
+                EthernetSignalMessage::Connected(ip) => break ip,
+                EthernetSignalMessage::Disconnected => {
+                    info!("mdns: link down, responder idle");
+                    Timer::after(Duration::from_secs(2)).await;
+                }
+            }
+        };
+
+        info!("mdns: serving {} → {}.local", ip, our_name.as_str());
+
+        // Let a fresh lease/link settle before binding and announcing.
+        Timer::after(Duration::from_millis(1_000)).await;
+
+        match mdns_session(stack, &mut trng, &our_name, ip, &mut receiver).await {
+            // Address or link moved underneath us — rebind (fresh join +
+            // fresh announcement) with the new state immediately.
+            Ok(()) => {}
+            Err(err) => {
+                warn!("mdns: session error: {:?} — rebinding", Debug2Format(&err));
+                // Backoff so a full SocketSet or flapping link cannot spin.
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
-pub async fn mdns_runner(
+/// One responder lifetime for `our_ip`. Ends on an IO error, on the
+/// announce-ticker spotting address/link drift, or on any connection event
+/// — the caller rebuilds with the current state either way.
+async fn mdns_session(
     stack: Stack<'static>,
-    trng: Trng<'static, TRNG>,
+    trng: &mut Trng<'static, TRNG>,
     our_name: &str,
     our_ip: Ipv4Addr,
+    receiver: &mut EthernetSignalReceiver<'_>,
 ) -> Result<(), MdnsIoError<UdpError>> {
-    // info!("About to run an mDNS responder for our PC. It will be addressable using {our_name}.local, so try to `ping {our_name}.local`.");
-
-    info!("mdns_runner: Creating stack buffers...");
     let udp_buffers: edge_nal_embassy::UdpBuffers<5, 1024, 1024, 5> = edge_nal_embassy::UdpBuffers::new();
-
-    info!("mdns_runner: Creating UDP stack...");
     let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
 
-    info!("mdns_runner: Creating buffers...");
     let (recv_buf, send_buf) = (
         VecBufAccess::<NoopRawMutex, 1500>::new(),
         VecBufAccess::<NoopRawMutex, 1500>::new(),
     );
 
-    info!("mdns_runner: Creating socket...");
     let mut socket = edge_mdns::io::bind(
         &udp,
         edge_mdns::io::DEFAULT_SOCKET,
@@ -119,19 +186,17 @@ pub async fn mdns_runner(
 
     let (recv, send) = socket.split();
 
-    info!("mdns_runner: Creating host...");
     let host = edge_mdns::host::Host {
         hostname: our_name,
-        ipv4: our_ip, //Ipv4Addr::new(192, 168, 49, 39),
+        ipv4: our_ip,
         ipv6: Ipv6Addr::UNSPECIFIED,
-        ttl: Ttl::from_secs(60),
+        ttl: Ttl::from_secs(MDNS_TTL_SECS),
     };
 
-    // A way to notify the mDNS responder that the data in `Host` had changed
-    // We don't use it in this example, because the data is hard-coded
-    let signal = Signal::<NoopRawMutex, _>::new();
+    // Signals the edge_mdns broadcast loop into re-announcing (its own loop
+    // would announce once at startup and then wait forever).
+    let signal = Signal::<NoopRawMutex, ()>::new();
 
-    info!("mdns_runner: Creating Mdns...");
     let mdns = edge_mdns::io::Mdns::new(
         Some(Ipv4Addr::UNSPECIFIED),
         Some(0),
@@ -143,9 +208,31 @@ pub async fn mdns_runner(
         &signal,
     );
 
-    info!("mdns_runner: Running Mdns...");
-    mdns.run(HostAnswersMdnsHandler::new(&host)).await?;
+    let run = pin!(mdns.run(HostAnswersMdnsHandler::new(&host)));
+    let serve = pin!(select(run, announce_ticker(&signal, stack, our_ip)));
+    let changed = pin!(receiver.changed());
 
-    info!("mdns_runner: Finished");
-    Ok(())
+    match select(serve, changed).await {
+        Either::First(Either::First(result)) => result,
+        // Ticker saw the address/link move, or a connection event arrived:
+        // a clean rebind, not an error.
+        _ => Ok(()),
+    }
+}
+
+/// Periodic gratuitous announce; also the self-check that catches a DHCP
+/// renew or link loss that nobody signalled — ends the session so the
+/// responder rebinds with fresh state.
+async fn announce_ticker(signal: &Signal<NoopRawMutex, ()>, stack: Stack<'static>, served_ip: Ipv4Addr) {
+    loop {
+        Timer::after(ANNOUNCE_INTERVAL).await;
+
+        match stack.config_v4() {
+            Some(cfg) if cfg.address.address() == served_ip => signal.signal(()),
+            _ => {
+                info!("mdns: address or link changed under the responder — rebinding");
+                return;
+            }
+        }
+    }
 }

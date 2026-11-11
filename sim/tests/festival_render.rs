@@ -56,7 +56,6 @@ fn festival_anims() -> Vec<(&'static str, AnimationEnum)> {
         ("Penguins", Penguins),
         ("Reindeer", Reindeer),
         ("ElectricGuitar", ElectricGuitar),
-        ("MadameRatcliffe", MadameRatcliffe),
         ("Parrot", Parrot),
         ("CircusTent", CircusTent),
         ("Elephants", Elephants),
@@ -94,7 +93,7 @@ fn default_playlist_serialises_and_loops() {
     let total_s: u32 = playlist.iter().map(|item| item.duration_ms / 1000).sum();
     println!("festival loop: {} items, {total_s}s", playlist.len());
     println!("{json}");
-    assert!((300..380).contains(&total_s), "loop should stay near five minutes");
+    assert!((280..380).contains(&total_s), "loop should stay near five minutes");
 }
 
 #[test]
@@ -161,7 +160,6 @@ fn animation_library_advertises_new_variants() {
         "Penguins",
         "Reindeer",
         "ElectricGuitar",
-        "MadameRatcliffe",
         "Parrot",
         "CircusTent",
         "Elephants",

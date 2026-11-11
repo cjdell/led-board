@@ -1,7 +1,9 @@
 # AGENTS.md — led-board
 
-Rust firmware for a Raspberry Pi Pico 2 W LED art board (embassy, `no_std`)
-with an optional ESP32-C3 slave-radio mode. Read this before building or
+Rust firmware for a Raspberry Pi Pico 2 W LED art board (embassy, `no_std`).
+Networking: cyw43 Wi-Fi (`wifi` — the primary path), `usb_ethernet` or `ppp`.
+The ESP32-C3/C6 **slave-radio mode is retired (Nov 2026)** — see "Legacy" at
+the end; never build against it for a real board. Read this before building or
 flashing anything; most failure modes here are tooling traps, not code bugs.
 
 ## Repository layout
@@ -9,14 +11,14 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 | Path | What it is |
 |---|---|
 | `led_core/` | **All system logic** (`no_std`): picoserve web app, WebSocket pump, display worker, heartbeat, config, screen model. Platform boundary = traits (`Board`, `OtaBackend`, `LocalFsTrait`, `Ws2812ParallelDriver`). Compiles for both thumbv8m and the host (`--features std`). |
-| `firmware/` | Pico 2 W (RP2351) hardware impl: bin target `ws`, PIO WS2812 driver, flash stores, `Board` impls (radio/cyw43), embassy-net + C3-tunnel transports. Feature matrix below. |
+| `firmware/` | Pico 2 W (RP2351) hardware impl: bin target `ws`, PIO WS2812 driver, flash stores, `Board` impls (cyw43), embassy-net transports (incl. the retired `radio` tunnel). Feature matrix below. |
 | `sim/` | macOS full-system simulator (`just sim` — dot-matrix window + real web UI on :8080) + old `animation_dev` scratchpad. |
-| `radio_link/` | Shared `no_std` framed-protocol crate (Pico ↔ ESP32 slave radio over UART). |
-| `slave_radio/` | ESP32-C3 firmware (esp-hal, RISC-V). **Detached workspace** — excluded from the root workspace and has its own `Cargo.lock` + `.cargo/config.toml`. |
+| `radio_link/` | **RETIRED Nov 2026** (ESP32 slave radio): shared `no_std` framed-protocol crate. Kept as history. |
+| `slave_radio/` | **RETIRED Nov 2026**: ESP32-C3 firmware (esp-hal, RISC-V). **Detached workspace** — excluded from the root workspace and has its own `Cargo.lock` + `.cargo/config.toml` (a trap for repo-root cargo commands, see below). |
 | `embedded_tools/` | `LocalFs`/`ConfigFile` + the **log facade** (`use embedded_tools::{info,warn,error,debug,Debug2Format}`; defmt on embedded, println on host — feature `defmt` xor `std`). |
 | `ws_client/` | Host-side client. |
 | `web/` | SPA (Solid + TypeScript, Deno/vite, no Bootstrap — custom theme in `src/theme.scss`). `web/compile.sh` → `web/bundle/index.html.gz` (gitignored, include_bytes'd into firmware + sim). `deno task dev` = :3000 dummy API; `deno task check` / `fmt`. |
-| `docs/slave-radio.md` | ESP32 slave radio: wiring, architecture, provisioning/portal behaviour. |
+| `docs/slave-radio.md` | **RETIRED**: complete ESP32 slave-radio forensics — wiring, architecture, flashing/OTA, monitoring quirks, protocol. History only. |
 | `README.md` | Authoritative pinout table + architecture diagrams (Mermaid). |
 
 ## Toolchain traps (read first)
@@ -28,9 +30,9 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
   `[build] target` in `.cargo/config.toml` is commented out. Without it, cargo
   builds for the host and you get confusing `cortex-m` E0425 / "invalid
   register r0" errors.
-- Run host tests from the **repo root**: `cargo test -p radio_link`. From
-  inside `slave_radio/` its `.cargo/config.toml` forces the RISC-V target and
-  everything fails to link.
+- Run host tests from the **repo root** (e.g. `cargo test -p sim`). From
+  inside the retired `slave_radio/` its `.cargo/config.toml` forces the RISC-V
+  target and everything fails to link.
 - `rustfmt` runs on save and reorders imports — re-read a file immediately
   before `edit_file` matches or fuzzy-match edits will miss.
 - Rust size/objcopy tooling: Apple's `size` can't read ELF. Use
@@ -71,8 +73,8 @@ Traps in this layer (all verified):
   cooperative executor (this is free on the Pico, where the PIO DMA wait
   paces the loop).
 - The sim hands the leaked `&'static AppRouter` to the tokio thread as a
-  raw pointer (mpsc `usize`) — same pattern as the Pico's TUNNEL_APP; the
-  router is single-owner afterwards, so it needs no `Sync`.
+  raw pointer (mpsc `usize`) — same pattern as the retired radio tunnel's
+  TUNNEL_APP; the router is single-owner afterwards, so it needs no `Sync`.
 - **The sim serves at `http://localhost:8080/` — same host as the dummy-API
   rule in `web/src/lib/device/index.ts`.** A page opened at `localhost` with a
   port **other than 3000** now uses the *real* API; only `localhost:3000`
@@ -92,21 +94,12 @@ Traps in this layer (all verified):
 Feature matrix for `firmware`: pick one transport + one network.
 
 - Transports: `defmt_rtt` (needs an external debug probe), `defmt_tcp`
-- Networks: `wifi` (cyw43, flaky — legacy), `usb_ethernet`, `ppp`, `radio` (ESP32-C3)
+- Networks: `wifi` (cyw43 — the primary venue path), `usb_ethernet`, `ppp`.
+  `radio` (ESP32 slave) is **retired** — it still compiles, never deploy it.
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo check -p firmware --features radio,defmt_rtt --target thumbv8m.main-none-eabihf
-```
-
-C3 firmware (its `.cargo/config.toml` pins the C3 target). For the **C6**
-build pass the target explicitly — its `.cargo/config.toml` default does not
-match (C6 is `imac`, C3 is `imc`):
-
-```sh
-cd slave_radio && cargo build --release                    # C3
-cd slave_radio && cargo build --release --no-default-features \
-    --features esp32c6 --target riscv32imac-unknown-none-elf  # C6-Zero
+cargo check -p firmware --features wifi,defmt_tcp --target thumbv8m.main-none-eabihf
 ```
 
 A Nix flake is provided (`nix develop`, fenix toolchain with all targets) but
@@ -125,7 +118,7 @@ just main          # interactive fzf picker: transport, network → build → fl
 Or manually:
 
 ```sh
-cargo objcopy --release -p firmware --features radio,defmt_rtt --bin ws \
+cargo objcopy --release -p firmware --features wifi,defmt_tcp --bin ws \
     --target thumbv8m.main-none-eabihf -- -O binary tmp/ws.bin
 picotool load --offset 0x10001000 tmp/ws.bin    # BOOTSEL not required for this image
 picotool reboot
@@ -144,7 +137,7 @@ picotool load --offset 0x10001000 tmp/ws.bin   # auto-resets the chip on success
 picotool reboot -a -f            # no vid flags needed for RP2350 Boot (2E8A:000F)
 ```
 
-`scripts/flash_both.sh` automates C6 + Pico with the polling. Traps:
+Traps:
 
 - The `-u` reboot **must** pass `--vid 5824 --pid 1171`: picotool 2.3.0 only
   scans Raspberry Pi VID unless given explicit ids, and the console lives on a
@@ -226,115 +219,25 @@ ring every 30 s. Steady state with display + 5 web tasks is ~47 KB free of
 
 Keep `tmp/ws.elf` (copy of the release ELF) for `probe-rs attach`/`defmt-print`.
 
-## Flashing — ESP32-C6 / C3 (`slave_radio/`)
+## Legacy: ESP32 slave radio (retired Nov 2026)
 
-Wiring, architecture and provisioning behaviour:
+The `radio` network mode (Pico ↔ ESP32-C3/C6 over UART, radio terminates TCP)
+is **retired and will probably never be used again** — cyw43 Wi-Fi passed
+acceptance at 7–10× the relay's throughput. `radio_link/` + `slave_radio/`
+stay in-tree as history; `firmware`'s `radio` feature still compiles but is
+never deployed, and no dependency work happens for it (esp-hal stays pinned at
+its old tag). **All operational forensics** — build/flashing/OTA recipes, A/B
+partition traps, monitoring quirks, link protocol, heap bounds, portal routing,
+acceptance harness — are consolidated in
 [`docs/slave-radio.md`](docs/slave-radio.md).
-
-```sh
-just radio-flash    # build + espflash flash --partition-table partitions.csv (explicit!)
-```
-
-- **Never trust `cargo flash` here**: the `runner`'s `--partition-table` flag is
-  silently ignored, and the chip gets the *default* table (factory app at
-  `0x10000`) — which **collides with the `cfg` journal** also at `0x10000`.
-  `partitions.csv` gotchas: esp-idf-part rejects custom data subtypes like
-  `0x40` (use `undefined`); `espflash erase-region` takes positional
-  `<addr> <size>`; wipe stored WiFi config with
-  `espflash erase-region 0x10000 0x4000`.
-- Flashes over the C6's **native USB-JTAG** port (`/dev/cu.usbmodem…`,
-  `espflash list-ports` finds it). ~7 s for the ~690 KB image.
-- `espflash board-info -p <port>` is a safe health check; it ends with a
-  hard-reset back into the app.
-- Config store lives in flash at `0x10000` (`cfg` partition). Factory config
-  boots into AP **"LED Board"** at `192.168.2.1` (mDNS `led-board.local`),
-  captive portal included; saved-network failures fall back to the same AP.
-
-### A/B partition table + radio OTA (Nov 2026)
-
-`partitions.csv`: nvs(0x9000) / otadata(**0xd000**) / phy / cfg(0x10000,
-unchanged) / **ota_0@0x20000** / **ota_1@0x210000**, each `0x1F0000` (~2 MB);
-no factory app. espflash confirms the custom table with app capacity
-**2,031,616** (= `0x1F0000`).
-
-USB flash on this table **must name the slot** and clear otadata for a
-deterministic boot (both are built into `scripts/flash_both.sh` and the
-`radio-flash`/`radio-c6-flash` just recipes):
-
-```sh
-espflash flash --partition-table partitions.csv --target-app-partition ota_0 …
-espflash erase-region -p <port> 0xd000 0x2000   # empty otadata → boots ota_0
-espflash reset -p <port>
-```
-
-**OTA over the network**: `just radio-ota` — builds the C6 image,
-`espflash save-image --chip esp32c6 <ELF> tmp/radio.bin`, then
-`curl POST /api/ota-radio` to the board's IP. The C6 streams the image into
-the *inactive* slot (`src/ota.rs`), flips otadata, reboots; `GET
-/api/ota-radio` returns `{version, slot, update_writes_to}` — check `slot`
-flipped. STA acceptor peeks the request head and serves the ota-post
-*locally even when the Pico is offline*; `/api/ota-radio` is portal-claimed
-so it also works on the fallback AP (POST via phone won't work — needs the
-ELF — but GET status does).
-
-- **Boot confirm/rollback hatch**: the app marks the running slot `Valid` at
-  boot (after `esp_rtos::start`, before anything touches flash).
-  The prebuilt bootloader has **no auto-rollback**, so a bootable-but-broken
-  image stays booted — the manual recovery is to **hold GPIO9 (C6 BOOT strap,
-  input-pull-up after boot) LOW across a reset**: the boot guard then flips
-  otadata to the other slot and reboots. C6-Zero may have no physical button
-  — bridge GPIO9→GND before power-up/reset, or just re-flash over USB.
-- The OTA write holds the **store mutex** for the whole upload (~30 s on
-  WiFi): the journal and portal API block meanwhile — by design; the chip
-  reboots at the end regardless.
-- Don't `erase-region 0xd000` while inspecting slot state after an OTA —
-  that resets selection to ota_0.
-
-## Monitoring — C3 (important quirks)
-
-- Console is USB-JTAG (`esp-println` `jtag-serial` feature — do **not** move
-  it to UART0: UART0's default pins GPIO20/21 are the link pins to the Pico).
-- Native USB-JTAG **enumeration drops on every chip reset**. A monitor
-  attached across a reset sees nothing. **Opening** the port also resets the
-  chip (DTR auto-reset circuit) — exploit it: with `cat` attached, every
-  reconnect replays the boot sequence live.
-- Logs emitted while no host is attached are dropped (esp-println is
-  non-blocking by design, 64-byte FIFO) — and second-stage bootloader logs
-  fill that FIFO before the app prints anything. Consequence: **panics are
-  invisible on a cold boot**. Bring-up scaffolding exists in
-  `src/bin/slave_radio.rs`: a 6 s boot delay + `stage:` `println!` breadcrumbs
-  + a 5 s `hb:` heartbeat (mode/ap_up/joined/pico_online/rx counters/heap_free)
-  so attaching a listener shows exactly where boot stalls. Capture pattern:
-  `cat /dev/cu.usbmodemNNN & sleep 16; kill %1`.
-- mDNS: `led-board.local` takes ~5 s to resolve from this Mac (unrelated to
-  the link) — script against the C6's DHCP IP instead.
-- **Never touch the Mac's WiFi** (`networksetup -setairportnetwork` …) — it is
-  the agent's own uplink; AP-mode tests run from the user's phone while the
-  Mac stays on the LAN.
-- Log level is baked at build time from `ESP_LOG` in
-  `slave_radio/.cargo/config.toml` `[env]` (= info). Changing it requires a
-  rebuild.
-- `espflash monitor` needs a real TTY (fails when piped). For scripted capture
-  use `script -q out.log <cmd>` or `/usr/bin/expect`.
-- Killing the terminal mid-`cat /dev/cu.usbmodem…` can orphan a `cat` that
-  holds the port; `pkill -f 'cat /dev/cu'` if espflash can't open it.
 
 ## Hardware pins (see README.md pinout table for truth)
 
-Radio-link wiring and the C3/C6 side of the link:
-[`docs/slave-radio.md`](docs/slave-radio.md).
-
-- Pico UART0 → C3 link: **GP12 = TX → C3 GPIO20**, **GP13 = RX ← C3 GPIO21**
-  (C3 uses UART1 there; its GPIO matrix allows other free GPIOs too).
-  **460800 baud** (`radio_link::BAUD`) — 921600 tested clean-by-CRC at single
-  loads but tripped ~1 mid-frame corruption per 10–15 loads on this bench's
-  jumpers; re-test after wiring rework before raising it. GP0/GP1 are
-  deliberately left free for a debug console.
 - GP2–GP9: WS2812 STRIP 0–7 (PIO1). GP23/24/25/29: cyw43 (wifi builds only).
-- C3/C6 GPIO8: status LED (active-low). GPIO18/19: USB (console). C6 **GPIO9**
-  is the OTA boot-guard input (BOOT strap; held low across reset = flip A/B
-  slot) — do not wire elsewhere. Avoid GPIO 2/8/11 for new wiring (boot
-  strapping) and 26–31 (flash).
+  GP0/GP1 are deliberately left free for a debug console.
+- GP12/GP13 (UART0) carried the retired radio link at 460800 baud
+  ([`docs/slave-radio.md`](docs/slave-radio.md)) — free now, keep the pairing
+  clear for future UART use.
 - RP2351 legal UART pins are fixed-function; the authoritative list is the
   `impl_pin!` table in the locked embassy-rp checkout (`uart/mod.rs`).
 
@@ -372,8 +275,8 @@ Radio-link wiring and the C3/C6 side of the link:
   → 15/15 identical 73,541 B loads (pre-truncate-fix number; loads are now
   40,566 B after the UI rewrite — re-run acceptance at the new size), one sha256 group, 0 curl failures, 0 guard
   trips. Singles ≈0.16 s (≈3.3–3.7 Mbit/s), 4-bursts ≈0.3–0.5 s (≈1.2–2 Mbit/s)
-  — 7–10× the radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800 UART), so the slave
-  radio is demoted to a provisioning/legacy option, not the throughput path.
+  — 7–10× the (now-retired) radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800
+  UART), which is what retired the slave radio.
   Burst-load defmt shows `failed to push rxd packet` + `unexpected ethernet
   type 0x0000` warnings = cyw43 RX pool pressure (the retransmit tail); the
   October embassy pool fixes address exactly this, still behind the xarxa line.
@@ -396,11 +299,6 @@ Radio-link wiring and the C3/C6 side of the link:
   panel always returns to the festival playlist even when the network never
   comes up. The AP itself stays up for provisioning; `/api/join-status` still
   reports `ap_fallback`.
-- **esp-hal stays at tag `esp-hal-v1.1.2`**; v1.2.0 exists (Sep 2026) but the
-  port is a full radio session with the bench online: typed `Ssid`/`Password` +
-  `AuthenticationMethodConfig` configs, `DmaAlignedMut` descriptor buffers,
-  `SoftwareInterruptControl` removed, `esp_radio::wifi::new` renamed,
-  `Interface` lifetime changes. Supervisor-only edits do not compile.
 
 ## Firmware sizes (release, Nov 2026)
 
@@ -416,10 +314,12 @@ set + enlarged 1020 K A/B slots: **wifi 573,428 B (~471 K headroom), radio
 532,016 B**, and the bench **wifi,defmt_tcp,console** image is 663,000 B
 (45.8 KB gz bundle). After the Nov 2026 OTA/recovery work (crash log,
 sector-padded OTA, heap telemetry, paced upload): **wifi 576,696 B, bench
-console 667,480 B**. The old wifi tightness is gone; the next ceiling is the
-1020 K slot, not the SPA. Console builds now fit comfortably again.
-C3 ≈ 690 KB (~17% of app partition, ~338 KB of ~400 KB RAM). No size pressure
-anywhere else.
+console 667,480 B**. After the panel frame mirror (`/api/frame`, +7.2 KB
+`.bss`), dropping `MadameRatcliffe` and the supervised mDNS responder:
+**wifi 579,244 B, bench console 669,264 B** (retired `radio` build: 536,232 B
+— the linker drops the responder there, it never spawns). The old wifi tightness is
+gone; the next ceiling is the 1020 K slot, not the SPA. Console builds now fit
+comfortably again. No size pressure anywhere else.
 
 ## Protocol notes
 
@@ -457,6 +357,35 @@ anywhere else.
   frame, not a hang. The 10 s ledger line reports `draw … us/frame, panel
   … us/frame` to tell which side is the clock. `LedScreen::copy_eg_buffer`
   takes `&[Rgb888; TOTAL_PIXELS]` (the per-frame 7.2 KB `collect()` is gone).
+- **Panel frame mirror (Nov 2026)**: `GET /api/frame` serves the display
+  worker's live buffer as raw row-major RGB888 (60×40×3 = **7200 B**,
+  `led_core::types::PANEL_FRAME`, an `embassy_sync::mutex::Mutex` static).
+  The worker publishes every 250 ms with non-blocking `try_lock` (a poller
+  streaming a response just makes one publish skip). Snapshot is taken
+  **before** `apply_power_limit` — the authored sRGB — because the panel's
+  γ-stage exists to reproduce exactly those colors on linear strips, so a
+  browser can paint it 1:1. The UI's `/now` + playlist heroes
+  (`<LedMatrix live>`) poll it at 2 fps (`web/src/lib/liveframe.ts`) and
+  fall back to the TypeScript painters when unavailable (dummy dev mode,
+  pre-mirror firmware, board offline). Library-card thumbnails stay painter
+  based. Streaming goes through `Content` from the mutex guard — never copy
+  `PanelFrame` onto a task stack (7.2 KB).
+- **mDNS responder (Nov 2026, hardened)**: `mdns_task` (tasks/common.rs) is a
+  supervised **session loop** over `edge_mdns`, not a one-shot spawn: it
+  waits for an IPv4 from `EthernetSignal`, binds fresh (fresh IGMP join —
+  memberships die with the link, which made the old responder deaf after a
+  rejoin), serves the *current* address, and rebinds on every connection
+  event, on silent DHCP drift (the announce ticker compares
+  `stack.config_v4()` to the served IP every 15 s), and on any UDP error
+  (1 s backoff — no `.expect()` anywhere, the responder cannot die). It
+  **re-announces every 15 s** (¼ of the 60 s TTL) so caches self-heal without
+  a query round — verified from the bench: `dns-sd -Q led-board.local A`
+  answers in ~1 ms even >TTL after the last query. **The notorious
+  "~5 s to resolve led-board.local" is NOT the board**: this Mac's VPN utun
+  stack flags mDNSResponder's `local` resolver `Not Reachable`
+  (`scutil --dns`), so `dscacheutil`/getaddrinfo spend a fixed 5 s
+  failover regardless of cache state (10 s for NXDOMAIN). Script against the
+  IP (resolve once via `dns-sd`), or fix the VPN's split-DNS.
 - **Web live-status protocol (Nov 2026)**: the display worker is the single
   source of truth and publishes `StatusWatch`/`PlaylistWatch` (pre-serialised
   JSON `Arc<str>`s in `led_core::types`); the WS pump pushes them every 1 s +
@@ -471,71 +400,13 @@ anywhere else.
   a serde visitor still accepting legacy `[animation, ms]` tuples (old flash
   files + ws_client parse unchanged); durations clamp to 0.5 s–15 min.
 
-- Embassy-net socket budgets: `StackResources<N>` in `src/bin/slave_radio.rs`
-  is the smoltcp **max socket count per stack** (AP: dhcp + dns + mdns + 2
-  acceptors + clients → 12; STA: mdns + 3 acceptors + clients → 16). Exceeding
-  it panics (`SocketSet full`) — size new socket-using services before adding them.
-- UART frames: `[0xBEEF][type u8][stream u16][len u16][crc16 LE][serde_json]`,
-  defined once in `radio_link/` — change both sides together and bump
-  `HelloInfo` version checks if the wire format changes. Protocol v3:
-  `STREAM_ACK` frames (payload: cumulative u32 LE **frames** consumed) window
-  stream data at `radio_link::STREAM_WINDOW_FRAMES` (4 frames) un-acked per
-  stream per direction. The window counts **frames, not bytes** (v2's 8 KB
-  byte window let small frames — 15 B HTTP header writes — pipeline more
-  frames than the queue has slots → burst overruns and truncation): queue
-  depth is derived from the same constant on both sides, so overflow is
-  unreachable for any frame sizes. 4 frames ≈ 90 ms of buffering at 460800 —
-  throughput stays line-rate bound. The link is **lossless by construction**:
-  `FRAME_TX.send` blocks (never drops), and any anomaly (CRC fail, overrun,
-  30 s without acks) closes *that stream* — one retriable request, never
-  silent corruption. Don't re-add timeout/drop heuristics; that was the
-  pre-v2 bug (pages truncated at ~16 KB).
-- **Heap bounds on the radio**: stream queues are per-frame heap `Vec`s inside
-  the C3/C6's 112 KB heap. Worst case (slots × pool × 1 KB + `FRAME_TX`
-  backlog) once OOM-panicked the chip — a WiFi disconnect mid-load brought up
-  the fallback AP, and the APSTA combo mode pins tens of KB (measured: idle
-  AP+STA `heap_free` ≈ 9 KB vs 19 KB STA-only). The supervisor now **disables
-  the fallback AP after a successful STA join** (Station mode; ApStation keeps
-  it) via an APSTA→STA `set_config`. The `hb:` heartbeat logs `heap_free` —
-  watch it under load; floor during the 4-way burst suite ≈ 14 KB.
-  The global allocator is **TLSF** (`ESP_ALLOC_CONFIG_HEAP_ALGORITHM` in
-  `.cargo/config.toml`) — the default LLFF list allocator OOM-panicked mid-
-  suite while `heap_free` still read ~10 KB (fragmentation: a 1 KB flash-write
-  scratch found no contiguous block). Changing the value needs `cargo clean -p
-  esp-alloc`. `heap_free` is a *sum* — it can lie while the largest free block
-  is tiny; suspect fragmentation first when small allocs fail.
-- **read_head buffering rules** (`slave_radio/src/httpd.rs`): the acceptor
-  peeks the request head on every connection (STA *and* AP) so `/api/ota-radio`
-  is served by the radio itself. Consequences to remember: (1) `parse_head`
-  must slice the head in BYTES before `from_utf8` — a POST prefix carries
-  binary body and UTF-8-failing-the-whole-buffer silently became `GET /` and
-  relayed firmware uploads to the Pico (404); (2) bodies > 4096 B are NOT
-  buffered into `prefix` (a growing prefix realloc OOM-panicked the chip
-  mid-upload; `ota::update` and the relay stream the rest from the socket);
-  (3) connections not starting with an HTTP method token are RST'd — stale
-  same-4-tuple retransmits from an aborted upload otherwise land as the next
-  connection's head (poisoned `GET /` relays, identical truncated responses
-  run after run). Big uploads: curl POSTs to a flaky link land in `just
-  radio-ota`'s retry loop by design (writes to the inactive slot are
-  idempotent from offset 0).
-- Acceptance harness: `./scripts/stress.sh` — captures both consoles, waits for the
-  STA lease to answer (preflight), runs 3 single + 3×4-burst page loads
-  (73,541 B), then requires one sha256 group, 0 curl failures, and 0
-  `corrupt|gap|overran|timeout|abort` trips in either log. Pico build must use
-  `--features radio,defmt_tcp,console` (the USB console carries the guard
-  logs; C6 port = the non-bench `/dev/cu.usbmodem*`, renumbering is handled).
-  C6 console `cat` resets the chip on open — the 18 s "booting..." window
-  covers the rejoin.
-- Pico runs no IP stack in `radio` mode; the C3 terminates TCP and relays
-  sockets to picoserve on the Pico. Provisioning API (`/api/wifi`, `/api/status`,
-  `/api/networks`, `/api/forget`) is answered by the C3 itself so the portal
-  works even with the Pico unpowered. AP-mode routing: the **Pico app owns
-  `/` whenever it is online** (full web UI over the relay in AP mode too);
-  provisioning lives at `/setup`, and captive probes redirect there — or
-  straight to the app when mode is explicitly `AccessPoint` (the AP exists to
-  serve the UI then; fallback-AP pops still land on setup for repair). With the
-  board offline, the portal reclaims `/` for recovery. (`portal::route` claims
-  only probes/OPTIONS/`/setup`/`/favicon.ico`/the five API paths — anything
-  else relays, including WebSockets and `/api/ota`.) In pure `AccessPoint`
-  mode the supervisor never joins: `/setup` "Connect" only saves credentials;
-  joining resumes when mode returns to Station.
+- **Embassy-net socket budgets**: `StackResources<N>` is the smoltcp **max
+  socket count per stack** — exceeding it panics (`SocketSet full`), so size
+  new socket-using services before adding them. Wifi build (`tasks/wifi.rs`):
+  **16** = 5 web listeners + mdns + dhcp + defmt-TCP + a browser's parallel
+  connections (10 was too tight: the 4-way burst test hit refused
+  connections).
+- Acceptance harness (wifi): `HOST=http://<ip>/ ./scripts/stress_wifi.sh` —
+  3 single + 3×4-burst page loads, one sha256 group, 0 curl failures, 0 guard
+  trips in the defmt log (radio-era `scripts/stress.sh` is history, see
+  [`docs/slave-radio.md`](docs/slave-radio.md)).

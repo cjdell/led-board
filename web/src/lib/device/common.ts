@@ -139,6 +139,14 @@ export const BoardStatusSchema = v.object({
 
 export type BoardStatus = v.InferOutput<typeof BoardStatusSchema>;
 
+// ── Panel frame mirror (`GET /api/frame`) ─────────────────────────────────
+
+/// Geometry of the mirrored frame: raw row-major RGB888, matching the
+/// firmware's `led_screen::{WIDTH, HEIGHT}`.
+export const PANEL_WIDTH = 60;
+export const PANEL_HEIGHT = 40;
+export const PANEL_FRAME_BYTES = PANEL_WIDTH * PANEL_HEIGHT * 3;
+
 /// Accepts either the modern object item or a legacy `[animation, ms]`
 /// tuple — imported files and hand-written JSON both work.
 export function normalisePlaylist(raw: unknown): PlaylistItem[] {
@@ -220,6 +228,11 @@ export interface DeviceApi {
 
   getBoardStatus(): Promise<BoardStatus>;
   getAnimationList(): Promise<Animation[]>;
+
+  /// Raw RGB888 snapshot of the live panel (`PANEL_FRAME_BYTES` bytes), or
+  /// null when unavailable — unreachable board or firmware without the
+  /// mirror. Optional: dummy devices have no panel to mirror.
+  getPanelFrame?(): Promise<Uint8Array | null>;
 
   /// The playlist the board is actually running (live, not just flash).
   getPlaylistInfo(): Promise<PlaylistInfo>;

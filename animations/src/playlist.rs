@@ -169,7 +169,6 @@ impl Playlist {
             AnimationEnum::Penguins,
             AnimationEnum::Reindeer,
             AnimationEnum::ElectricGuitar,
-            AnimationEnum::MadameRatcliffe,
             AnimationEnum::Parrot,
             AnimationEnum::CircusTent,
             AnimationEnum::Elephants,
@@ -180,14 +179,14 @@ impl Playlist {
 
     /// Leigh Lights parade loop (Nov 2026): the whole festival brief, four
     /// lantern sections, each led by a gold title card and framed by the
-    /// "Light Up Leigh" scroll. One loop ≈ 5 min 20 s. Hardcoded so the board
+    /// "Light Up Leigh" scroll. One loop ≈ 5 min. Hardcoded so the board
     /// boots straight into it with no playlist file on flash (delete
     /// `playlist_default.json` / "Reset" to reach it).
     ///
     /// Every section item in the original brief has a scene: robins/owls/deer
     /// and leaves; snow leopard, Father Christmas, frost fairies, snow globe,
-    /// penguins, reindeer and snow; aurora, Buzzcocks/electric guitar, vinyl,
-    /// Madame Ratcliffe's hat parade and parrots; canal boats, mills, the
+    /// penguins, reindeer and snow; aurora, Buzzcocks/electric guitar, vinyl
+    /// and parrots; canal boats, mills, the
     /// spinning wheel, circus acrobat/clown and the colourful elephants.
     pub fn get_default_playlist_data() -> Vec<PlaylistItem> {
         vec![
@@ -228,7 +227,6 @@ impl Playlist {
             PlaylistItem::new(AnimationEnum::Aurora, 28_000).with_label("Section 3 · Aurora Borealis"),
             PlaylistItem::new(AnimationEnum::ElectricGuitar, 10_000).with_label("Section 3 · The Buzzcocks"),
             PlaylistItem::new(AnimationEnum::VinylSpin, 8_000).with_label("Section 3 · Vinyl Records"),
-            PlaylistItem::new(AnimationEnum::MadameRatcliffe, 8_000).with_label("Section 3 · Madame Ratcliffe · Hats"),
             PlaylistItem::new(AnimationEnum::Parrot, 8_000).with_label("Section 3 · Parrots"),
             // ── Section 4: Heritage in Motion ────────────────────────────
             PlaylistItem::new(

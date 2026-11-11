@@ -33,7 +33,7 @@ export function NowRoute() {
           <div class="hero">
             <div class="hero__matrix">
               <Show when={status()} fallback={<div class="led-matrix" style={{ "aspect-ratio": "3 / 2" }} />}>
-                {(s) => <LedMatrix animation={s().now_playing.animation} fps={24} />}
+                {(s) => <LedMatrix animation={s().now_playing.animation} fps={24} live />}
               </Show>
             </div>
 

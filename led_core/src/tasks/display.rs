@@ -17,14 +17,42 @@ use alloc::string::String;
 use animations::{
     Animation, AnimationEnum, AnimationParams, AnimationRunner, BufferTarget, Playlist, apply_power_limit,
 };
-use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::pixelcolor::{Rgb888, RgbColor};
 
 use crate::info;
 use crate::led_screen::{LedScreen, PIXELS_PER_STRIP, Ws2812ParallelDriver};
 use crate::types::{
-    BoardStatus, DisplayWorkerMessage, DisplayWorkerReceiver, Playing, PlaylistInfo, PlaylistSource,
+    BoardStatus, DisplayWorkerMessage, DisplayWorkerReceiver, PANEL_FRAME, Playing, PlaylistInfo, PlaylistSource,
     PlaylistWatchSender, StatusWatchSender,
 };
+
+/// Web-mirror cadence: enough for a 2 fps browser poll to look live, small
+/// enough that the copy is noise against the frame loop.
+const MIRROR_INTERVAL: embassy_time::Duration = embassy_time::Duration::from_millis(250);
+
+/// Publish the frame about to go to the panel onto [`PANEL_FRAME`] for
+/// `GET /api/frame`. Call before `apply_power_limit` (the mirror is the
+/// authored sRGB, which the panel's gamma stage reproduces). Skips the
+/// publish when a poller holds the lock mid-response — never blocks.
+fn mirror_frame(buffer: &BufferTarget<Rgb888>, last: &mut embassy_time::Instant) {
+    if last.elapsed() < MIRROR_INTERVAL {
+        return;
+    }
+
+    if let Ok(mut slot) = PANEL_FRAME.try_lock() {
+        slot.seq = slot.seq.wrapping_add(1);
+
+        for (i, px) in buffer.buffer.iter().enumerate() {
+            let o = i * 3;
+
+            slot.rgb[o] = px.r();
+            slot.rgb[o + 1] = px.g();
+            slot.rgb[o + 2] = px.b();
+        }
+
+        *last = embassy_time::Instant::now();
+    }
+}
 
 /// True when a timed status card has outlived its timeout. `timeout_ms == 0`
 /// means "no timeout" (the original `Status` message); anything else clears.
@@ -66,6 +94,7 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
     );
 
     let splash_start = embassy_time::Instant::now();
+    let mut last_mirror = splash_start;
     while splash_start.elapsed() < embassy_time::Duration::from_millis(1_800) {
         buffer_1.buffer.fill(Rgb888::new(0x00, 0x00, 0x10));
         splash.draw(
@@ -73,6 +102,7 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
             &AnimationParams::default(),
             &mut buffer_1,
         );
+        mirror_frame(&buffer_1, &mut last_mirror);
         apply_power_limit(&mut buffer_1, 0.1);
         led_screen.copy_eg_buffer(&buffer_1.buffer);
         led_screen.flush().await;
@@ -226,6 +256,7 @@ pub async fn run<D: Ws2812ParallelDriver<PIXELS_PER_STRIP>>(
             }
         }
 
+        mirror_frame(&buffer_1, &mut last_mirror);
         apply_power_limit(&mut buffer_1, power_limit);
 
         let t_panel = embassy_time::Instant::now();

@@ -39,7 +39,6 @@ const FESTIVAL: PlaylistItem[] = [
   { animation: "Aurora", duration_ms: 20_000, label: "Section 3 · Aurora Borealis" },
   { animation: "ElectricGuitar", duration_ms: 10_000, label: "Section 3 · The Buzzcocks" },
   { animation: "VinylSpin", duration_ms: 8_000, label: "Section 3 · Vinyl Records" },
-  { animation: "MadameRatcliffe", duration_ms: 8_000, label: "Section 3 · Madame Ratcliffe · Hats" },
   { animation: "Parrot", duration_ms: 8_000, label: "Section 3 · Parrots" },
   { animation: { CenteredTitle: ["Heritage", "in Motion"] }, duration_ms: 5_000 },
   { animation: "CanalBoats", duration_ms: 16_000, label: "Section 4 · Canal Boats" },

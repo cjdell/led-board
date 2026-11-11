@@ -5,6 +5,7 @@ use core::net::Ipv4Addr;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     channel::{self, Channel},
+    mutex::Mutex,
     watch::{self, Watch},
 };
 use embedded_graphics::pixelcolor::Rgb888;
@@ -171,6 +172,30 @@ pub type StatusWatchReceiver = watch::Receiver<'static, CriticalSectionRawMutex,
 pub type PlaylistWatch = Watch<CriticalSectionRawMutex, String, 12>;
 pub type PlaylistWatchSender = watch::Sender<'static, CriticalSectionRawMutex, String, 12>;
 pub type PlaylistWatchReceiver = watch::Receiver<'static, CriticalSectionRawMutex, String, 12>;
+
+// ── Panel frame mirror ─────────────────────────────────────────────────────
+
+/// Snapshot of what the display worker is *actually* drawing: row-major
+/// sRGB888 (60×40, 7200 B), captured **before** `apply_power_limit` — i.e.
+/// the authored colors. The panel's gamma stage exists to make the linear
+/// strips reproduce exactly those colors, so this is what the LEDs look like
+/// to the eye, and a browser can paint it 1:1. `seq` counts publishes.
+/// `GET /api/frame` serves `rgb` raw so the UI mirrors the real panel
+/// instead of approximating it with the TypeScript painters.
+pub struct PanelFrame {
+    pub seq: u32,
+    pub rgb: [u8; crate::led_screen::TOTAL_PIXELS * 3],
+}
+
+/// Writer: the display worker only — non-blocking `try_lock`, so a poller
+/// streaming a response just makes the next publish skip (the mirror runs
+/// at a few fps by design). Readers: web tasks, one per in-flight request.
+pub type PanelFrameMirror = Mutex<CriticalSectionRawMutex, PanelFrame>;
+
+pub static PANEL_FRAME: PanelFrameMirror = PanelFrameMirror::new(PanelFrame {
+    seq: 0,
+    rgb: [0; crate::led_screen::TOTAL_PIXELS * 3],
+});
 
 /// Board config file for a platform's file store. `LedBoardConfigurator`
 /// (add/remove networks) is implemented for this.

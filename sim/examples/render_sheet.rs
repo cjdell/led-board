@@ -40,7 +40,6 @@ fn main() {
         ("Reindeer", AnimationEnum::Reindeer),
         ("ElectricGuitar", AnimationEnum::ElectricGuitar),
         ("TrackChampion", AnimationEnum::TrackChampion),
-        ("MadameRatcliffe", AnimationEnum::MadameRatcliffe),
         ("Parrot", AnimationEnum::Parrot),
         ("CircusTent", AnimationEnum::CircusTent),
         ("Elephants", AnimationEnum::Elephants),

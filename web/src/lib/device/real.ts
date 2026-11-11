@@ -10,6 +10,7 @@ import {
   DeviceConfigSchema,
   DeviceEvents,
   DeviceMessage,
+  PANEL_FRAME_BYTES,
   PlaylistEntry,
   PlaylistEntrySchema,
   PlaylistInfo,
@@ -194,6 +195,23 @@ export class RealDeviceApi implements DeviceApi {
 
   public async getBoardStatus(): Promise<BoardStatus> {
     return v.parse(BoardStatusSchema, await (await this.fetch("status")).json());
+  }
+
+  /// `GET /api/frame` — live panel mirror (raw RGB888). Null instead of
+  /// throwing when the frame feed is unavailable: pre-mirror firmware
+  /// answers 404, and callers degrade to the painter preview.
+  public async getPanelFrame(): Promise<Uint8Array | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}frame`, { cache: "no-store" });
+
+      if (res.status !== 200) return null;
+
+      const bytes = new Uint8Array(await res.arrayBuffer());
+
+      return bytes.byteLength === PANEL_FRAME_BYTES ? bytes : null;
+    } catch {
+      return null;
+    }
   }
 
   public async getDeviceConfig(): Promise<DeviceConfig> {

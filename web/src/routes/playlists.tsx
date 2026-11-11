@@ -424,7 +424,7 @@ export function PlaylistsRoute() {
                   <PanelHeader>On the board now</PanelHeader>
                   <Body>
                     <div class="hstack" style={{ gap: "8px" }}>
-                      <LedMatrix animation={s().now_playing.animation} fps={10} style={{ width: "140px" }} />
+                      <LedMatrix animation={s().now_playing.animation} fps={10} live style={{ width: "140px" }} />
                       <div class="vstack" style={{ gap: "4px" }}>
                         <strong>{s().now_playing.title}</strong>
                         <span class="hint">

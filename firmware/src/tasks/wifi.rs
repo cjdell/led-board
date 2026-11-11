@@ -13,20 +13,11 @@ use alloc::{
     vec::Vec,
 };
 use animations::AnimationEnum;
-use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use core::net::{Ipv4Addr, SocketAddr};
 use core::sync::atomic::{AtomicU32, Ordering};
 use cyw43::{Control, JoinOptions, PowerManagementMode, SpiBus, aligned_bytes};
 use cyw43_pio::PioSpi;
 use defmt::*;
-use edge_mdns::{
-    HostAnswersMdnsHandler,
-    buf::VecBufAccess,
-    domain::base::Ttl,
-    host::Host,
-    io::{DEFAULT_SOCKET, MdnsIoError},
-};
-use edge_nal::{UdpBind as _, UdpSplit as _};
-use edge_nal_embassy::UdpError;
 use embassy_executor::Spawner;
 use embassy_futures::{join::join, yield_now};
 use embassy_net::{Config, DhcpConfig, Stack, StackResources};
@@ -235,7 +226,7 @@ async fn network_ready_task(
         crate::tasks::usb_dbg::log(format_args!("net: first signal — mdns up ({ip})"));
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let task = mdns_task(stack, trng, "led-board".to_string(), ip);
+        let task = mdns_task(stack, trng, "led-board".to_string(), ethernet_signal);
 
         match task {
             Ok(task) => {

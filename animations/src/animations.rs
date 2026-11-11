@@ -63,7 +63,6 @@ pub enum AnimationEnum {
     Reindeer,
     ElectricGuitar,
     TrackChampion,
-    MadameRatcliffe,
     Parrot,
     CircusTent,
     Elephants,
@@ -106,9 +105,6 @@ impl Animation for AnimationEnum {
             }
             AnimationEnum::TrackChampion => {
                 festival::track_champion(ms_since_start, target);
-            }
-            AnimationEnum::MadameRatcliffe => {
-                festival::madame_ratcliffe(ms_since_start, target);
             }
             AnimationEnum::Parrot => {
                 festival::parrot(ms_since_start, target);
@@ -1138,7 +1134,6 @@ impl AnimationEnum {
             AnimationEnum::Reindeer => "Reindeer",
             AnimationEnum::ElectricGuitar => "ElectricGuitar",
             AnimationEnum::TrackChampion => "TrackChampion",
-            AnimationEnum::MadameRatcliffe => "MadameRatcliffe",
             AnimationEnum::Parrot => "Parrot",
             AnimationEnum::CircusTent => "CircusTent",
             AnimationEnum::Elephants => "Elephants",

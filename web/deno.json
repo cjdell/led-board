@@ -22,6 +22,7 @@
     "@deno/vite-plugin": "npm:@deno/vite-plugin@^1.0.6",
     "@lib": "./src/lib/index.ts",
     "@lib/preview": "./src/lib/preview.ts",
+    "@lib/liveframe": "./src/lib/liveframe.ts",
     "@solidjs/router": "npm:@solidjs/router@^0.15.4",
     "sass-embedded": "npm:sass-embedded@^1.97.3",
     "solid-devtools": "npm:solid-devtools@^0.34.5",

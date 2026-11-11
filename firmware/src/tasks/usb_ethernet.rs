@@ -1,26 +1,17 @@
 use crate::{
     config::WifiMode,
     make_static,
-    tasks::{WifiControl, dhcp_task, mdns_runner, mdns_task},
+    tasks::{WifiControl, dhcp_task, mdns_task},
     types::{EthernetSignal, EthernetSignalMessage, LedBoardConfigFile, SharedWatchdog},
 };
 use alloc::{
     format,
     string::{String, ToString as _},
 };
-use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use core::net::Ipv4Addr;
 use cyw43::{Control, JoinOptions, PowerManagementMode, aligned_bytes};
 use cyw43_pio::PioSpi;
 use defmt::*;
-use edge_mdns::{
-    HostAnswersMdnsHandler,
-    buf::VecBufAccess,
-    domain::base::Ttl,
-    host::Host,
-    io::{DEFAULT_SOCKET, MdnsIoError},
-};
-use edge_nal::{UdpBind as _, UdpSplit as _};
-use edge_nal_embassy::UdpError;
 use embassy_executor::Spawner;
 use embassy_futures::{join::join, yield_now};
 use embassy_net::{Config, DhcpConfig, Stack, StackResources};
@@ -164,23 +155,8 @@ pub async fn init_usb_ethernet(
 
     info!("USB Ethernet task started");
 
-    let mut receiver = ethernet_signal.receiver().unwrap();
-
-    if let EthernetSignalMessage::Connected(ip) = receiver.get().await {
-        info!("WIFI GOT SIGNAL");
-        Timer::after(Duration::from_millis(1_000)).await;
-
-        let task = mdns_task(stack, trng, "led-board".to_string(), ip);
-
-        match task {
-            Ok(task) => {
-                spawner.spawn(task);
-            }
-            Err(err) => {
-                error!("Could not spawn task: {:?}", err);
-            }
-        }
-    }
+    // Supervised responder: waits for the address itself and follows it.
+    spawner.spawn(unwrap!(mdns_task(stack, trng, "led-board".to_string(), ethernet_signal)));
 
     (stack, public_control)
 }

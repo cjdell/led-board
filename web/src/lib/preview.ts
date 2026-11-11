@@ -629,33 +629,6 @@ const painters: Record<string, Painter> = {
     line(wx + 1, wy - 1, wx + 3, wy - 3, [210, 235, 255], p);
   },
 
-  MadameRatcliffe: (t, _prm, p) => {
-    fill(30, 2, 18, p);
-    for (let x = 0; x < 12; x++) for (let y = 0; y < 40; y++) set(x, y, 90, 10, 40, p);
-    for (let x = 48; x < 60; x++) for (let y = 0; y < 40; y++) set(x, y, 90, 10, 40, p);
-    for (let y = 33; y < 40; y++) for (let x = 12; x < 48; x++) set(x, y, 56, 14, 26, p);
-    // Bust and face.
-    line(14, 40, 29, 25, [38, 8, 26], p);
-    line(46, 40, 29, 25, [38, 8, 26], p);
-    rect(25, 19, 9, 6, [226, 214, 196], p);
-    ellipse(28, 16, 4, 5, [234, 208, 180], p);
-    line(32, 15, 35, 16, [234, 208, 180], p);
-    set(31, 15, 30, 14, 12, p);
-    set(31, 18, 190, 44, 66, p);
-    // Hat.
-    ellipse(28, 10, 12, 2, [46, 10, 34], p);
-    rect(23, 2, 13, 8, [54, 12, 40], p);
-    rect(23, 8, 13, 1, [255, 200, 88], p);
-    line(34, 7, 49, 3 + Math.sin(t), [240, 200, 130], p);
-    // Fan.
-    for (let k = 0; k < 5; k++) line(43, 29, 43 + Math.cos(-1 + k * 0.2) * 7, 29 + Math.sin(-1 + k * 0.2) * 7, [220, 90, 130], p);
-    // Hats.
-    rect(5, 4, 6, 5, [16, 12, 18], p);
-    ellipse(51, 10, 4, 3, [36, 28, 44], p);
-    ellipse(7, 30, 4, 2, [230, 190, 90], p);
-    ellipse(52, 31, 3, 2, [190, 30, 90], p);
-  },
-
   Parrot: (t, _prm, p) => {
     fill(4, 26, 34, p);
     for (let x = 2; x < 60; x += 9) line(x, 0, x, 10 + ((x * 5) % 10), [16, 64, 38], p);
