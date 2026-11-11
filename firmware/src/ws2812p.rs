@@ -46,9 +46,9 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
     /// one strip latch different frames ("rows out of step" — seen on the
     /// bench 2026-11-11). `PULL BLOCK` instead stalls at loop top where
     /// the last executed instruction was the T3 all-low — starvation parks
-    /// LOW, which is always harmless. Inter-frame latch gaps are carried
-    /// in-band as zero words (see the driver), so the FIFO in fact never
-    /// empties mid-stream.
+    /// LOW, which is always harmless. The FIFO in fact drains empty at
+    /// every frame end now: the driver parks there on purpose while it
+    /// holds the enforced inter-frame latch gap (see the driver).
     pub fn new(common: &mut Common<'a, PIO>) -> Self {
         let mut a: Assembler<32> = Assembler::new();
 
@@ -95,20 +95,32 @@ use led_core::led_screen::{N_STRIPS, Ws2812ParallelDriver};
 
 const BITS: usize = 24;
 
-/// Inter-frame latch gap, carried **in-band** as zero words at the tail of
-/// every buffer. A word is 4 bit periods = 5 µs of guaranteed LOW on the
-/// wire between frames — that is the WS2812 reset pulse (tRESET ≥ 50 µs)
-/// and it cannot be skipped by CPU timing, only stretched (harmless).
-/// Generous on purpose: SK6812-class clones (which art panels love) want
-/// 200-300 µs; 64 words ≈ 328 µs, ~3 % of the frame budget. (A
-/// `Timer`-based gap was tried first and broke the panel: see the program
-/// comment — the FIFO empties, and an `OUT` stall parks the pins HIGH,
-/// which the strips read as data.)
-const PAD_WORDS: usize = 64;
+/// Tail zero words per buffer: a slop-absorber (~41 µs of LOW), NOT the
+/// latch gap itself — see `LATCH_GAP_US` for why that lives on the CPU.
+const PAD_WORDS: usize = 8;
+
+/// **The latch gap.** After the wire drains, hold the line LOW this long
+/// before arming the next frame: this is the frame-boundary reset pulse
+/// the strips actually honour. Field evidence (2026-11-11): a purely
+/// in-band 328 µs pad left the panel latching ~1 frame per second while
+/// the wire ran a healthy 104 fps — classic SK6812S/SK6812MINI-class
+/// clone behaviour (those parts spec resets of 500 µs–1 ms, not the
+/// WS2812B 50 µs): sub-threshold gaps are treated as data, and only a
+/// boundary stretched by an incidental CPU pause (status publish, heap
+/// work) ever exceeded the threshold. The pre-pipeline driver "worked"
+/// for the same reason: its serial transpose+render left 4–9 ms of LOW
+/// at every boundary by accident.
+///
+/// The gap is CPU-enforced (the waiting SM parks LOW at the loop-top
+/// PULL, so wake latency only *stretches* it — never shortens). It must
+/// exceed pad-drain + poll + wake slop (~0.1 ms) by the strip spec:
+/// 1.5 ms guarantees ≥ ~1.35 ms of real LOW, covering even 1 ms-reset
+/// clones. Frame cycle ≈ 9.23 wire + 0.04 pad + 1.5 gap ≈ 10.8 ms.
+const LATCH_GAP_US: u64 = 1_500;
 
 /// Busy-poll interval while waiting for the in-flight frame to finish.
-/// Wake latency only *stretches* the in-band latch gap (the PULL parks the
-/// pins LOW meanwhile), so this costs frame rate, never correctness.
+/// Wake latency only *stretches* the latch gap (the PULL parks the pins
+/// LOW meanwhile), so this costs frame rate, never correctness.
 const DMA_POLL_US: u64 = 50;
 
 /// Parallel WS2812 driver for 8 simultaneous strips, fully pipelined:
@@ -116,12 +128,16 @@ const DMA_POLL_US: u64 = 50;
 /// the other DMA buffer and returns once N's transfer is done — the
 /// display worker's render time hides inside the wire time.
 ///
-/// Frame cycle = max(wire + pad, CPU). Wire = N_LEDS × 24 bit periods ×
-/// 1.282 µs (10.25 SM cycles per period at the 8 MHz SM clock — the
-/// LOW-parking PULL, see the program) = 9.23 ms at N_LEDS = 300, plus the
-/// 80 µs in-band pad, so the panel ceiling is ~107 fps; if render+transpose
-/// ever exceeds the wire time the next buffer is still being filled as its
-/// transfer starts (a torn frame, not a hang).
+/// Frame cycle = wire + latch gap (CPU is hidden inside the wire). Wire
+/// = N_LEDS × 24 bit periods × 1.282 µs (10.25 SM cycles per period at
+/// the 8 MHz SM clock — the LOW-parking PULL, see the program) = 9.23 ms
+/// at N_LEDS = 300, plus pad and the enforced `LATCH_GAP_US` reset pulse
+/// ≈ 10.8 ms → **~92 fps ceiling**. The gap is not pipeline slop: the
+/// strips on this bench need ≳1 ms of LOW to latch at all (see
+/// `LATCH_GAP_US`), and frames faster than that threshold simply never
+/// land. If render+transpose ever exceeds the wire time the next buffer
+/// is still being filled as its transfer starts (a torn frame, not a
+/// hang).
 ///
 /// - `S`        – PIO state machine index
 /// - `N_LEDS`   – number of LEDs **per strip**
@@ -129,7 +145,8 @@ pub struct PioWs2812ParallelDriver<'d, P: Instance, const S: usize, const N_LEDS
     dma: Channel<'d>,
     sm: StateMachine<'d, P, S>,
     /// Double-buffered DMA payloads: packed bit-column words followed by
-    /// `PAD_WORDS` zeros (the in-band latch gap; zeroed once, never written).
+    /// `PAD_WORDS` zeros (boundary slop absorber; zeroed once, never
+    /// written).
     buf: [Vec<u32>; 2],
     /// Index of the buffer *not* currently on the wire — the transpose
     /// target and the next transfer to start.
@@ -270,14 +287,15 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
         if self.started {
             // `Transfer`'s waker plumbing is crate-private, so completion
             // is a busy poll. Wake latency is safe by construction here:
-            // the frame just transferred ends with PAD_WORDS of zeros, the
-            // strips have been latched by them, and the waiting SM parks
-            // LOW at the loop-top PULL — a late start only stretches the
-            // LOW gap, it can never corrupt a boundary. (The latch is
-            // in-band, so no timer delay is needed — or wanted.)
+            // the waiting SM parks LOW at the loop-top PULL — a late start
+            // only stretches the LOW gap, it can never corrupt a boundary.
             while self.dma.regs().ctrl_trig().read().busy() {
                 embassy_time::Timer::after_micros(DMA_POLL_US).await;
             }
+            // Guaranteed latch gap (see LATCH_GAP_US): the pads alone are
+            // below these strips' reset threshold, so without this pause
+            // consecutive frames merge into one undivided stream.
+            embassy_time::Timer::after_micros(LATCH_GAP_US).await;
         }
 
         // `dma_push` arms the channel (EN=true) inside `configure()` — the
