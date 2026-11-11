@@ -32,14 +32,23 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
     ///              pins LOW  if bit=0       (data window)
     ///   T3 cycles: all 8 pins LOW           (stop/reset)
     ///
-    /// One OSR word feeds four OUTs (auto_fill, threshold 32): the loop is
-    /// exactly T1 + T2 + T3 = 10 SM cycles per bit period, so the SM clock
-    /// divisor below lands on the exact 800 kHz WS2812 rate. (The previous
-    /// program paid for 4 explicit PULLs per wrap — 11 cycles per bit,
-    /// 9 % of the wire budget lost.)
+    /// One PULL (block) feeds four OUTs = one OSR word per 4 bit periods.
+    /// Loop cost 41 SM cycles per 4 periods (10.25 per period at the 8 MHz
+    /// SM clock — the 1-cycle PULL is the price of safety, see below). The
+    /// previous Nov-2026 revision paid 4 PULLs (11 c/bit, 9.9 ms frames);
+    /// one per word lands within 2.5 % of the 800 kHz protocol floor.
     ///
-    /// Timing check at 8 MHz SM cycles: T0H = 250 ns, T1H = 875 ns,
-    /// T0L = 1000 ns, T1L = 375 ns — all inside WS2812B tolerance.
+    /// WHY the PULL must stay: the `OUT` is the only other instruction that
+    /// can stall (FIFO empty), and it sits right after the T1 all-high
+    /// pulse — an empty FIFO with auto_fill stalls the SM **with the pins
+    /// HIGH**. A >50 µs high pulse is not a reset: the strips read it as
+    /// data or per-chip garbage, frame boundaries smear, and pixels within
+    /// one strip latch different frames ("rows out of step" — seen on the
+    /// bench 2026-11-11). `PULL BLOCK` instead stalls at loop top where
+    /// the last executed instruction was the T3 all-low — starvation parks
+    /// LOW, which is always harmless. Inter-frame latch gaps are carried
+    /// in-band as zero words (see the driver), so the FIFO in fact never
+    /// empties mid-stream.
     pub fn new(common: &mut Common<'a, PIO>) -> Self {
         let mut a: Assembler<32> = Assembler::new();
 
@@ -48,25 +57,29 @@ impl<'a, PIO: Instance> PioWs2812ParallelProgram<'a, PIO> {
 
         a.bind(&mut wrap_target);
 
-        // ── T1: drive all 8 lines HIGH (start of bit pulse) ──────────────
-        // SET pins, 0xFF only does 5 bits — MOV pins, !NULL gets all eight.
-        a.mov_with_delay(
-            pio::program::MovDestination::PINS,
-            pio::program::MovOperation::Invert,
-            pio::program::MovSource::NULL,
-            T1 - 1,
-        );
+        a.pull(true, true); // ifempty=true, block=true — LOW-parking stall
 
-        // ── T2: output the data column; pins stay HIGH for 1-bits ────────
-        a.out_with_delay(OutDestination::PINS, 8, T2 - 1);
+        for _ in 0..4 {
+            // ── T1: drive all 8 lines HIGH (start of bit pulse) ──────────
+            // SET pins, 0xFF only does 5 bits — MOV pins, !NULL gets all eight.
+            a.mov_with_delay(
+                pio::program::MovDestination::PINS,
+                pio::program::MovOperation::Invert,
+                pio::program::MovSource::NULL,
+                T1 - 1,
+            );
 
-        // ── T3: drive all 8 lines LOW (end of bit pulse) ─────────────────
-        a.mov_with_delay(
-            pio::program::MovDestination::PINS,
-            pio::program::MovOperation::None,
-            pio::program::MovSource::NULL,
-            T3 - 1,
-        );
+            // ── T2: output the data column; pins stay HIGH for 1-bits ────
+            a.out_with_delay(OutDestination::PINS, 8, T2 - 1);
+
+            // ── T3: drive all 8 lines LOW (end of bit pulse) ─────────────
+            a.mov_with_delay(
+                pio::program::MovDestination::PINS,
+                pio::program::MovOperation::None,
+                pio::program::MovSource::NULL,
+                T3 - 1,
+            );
+        }
 
         a.bind(&mut wrap_source);
 
@@ -82,31 +95,39 @@ use led_core::led_screen::{N_STRIPS, Ws2812ParallelDriver};
 
 const BITS: usize = 24;
 
-/// WS2812 latch: the reset-low gap between frames that makes a strip show
-/// the data just shifted in (tRESET ≥ 50 µs). Pipelining removed the CPU's
-/// incidental inter-frame pause, so the driver owns this delay explicitly.
-const LATCH_US: u64 = 60;
+/// Inter-frame latch gap, carried **in-band** as zero words at the tail of
+/// every buffer. A word is 4 bit periods = 5 µs of guaranteed LOW on the
+/// wire between frames — that is the WS2812 reset pulse (tRESET ≥ 50 µs)
+/// and it cannot be skipped by CPU timing, only stretched (harmless).
+/// 16 words = 80 µs. (A `Timer`-based gap was tried first and broke the
+/// panel: see the program comment — the FIFO empties, and an `OUT` stall
+/// parks the pins HIGH, which the strips read as data.)
+const PAD_WORDS: usize = 16;
 
 /// Busy-poll interval while waiting for the in-flight frame to finish.
-/// Only the overshoot past true completion costs frame time (~1 %).
+/// Wake latency only *stretches* the in-band latch gap (the PULL parks the
+/// pins LOW meanwhile), so this costs frame rate, never correctness.
 const DMA_POLL_US: u64 = 100;
 
 /// Parallel WS2812 driver for 8 simultaneous strips, fully pipelined:
 /// while frame N is on the wire, `write` for frame N+1 transposes into
 /// the other DMA buffer and returns once N's transfer is done — the
-/// display worker's render time hides inside the 9 ms wire time.
+/// display worker's render time hides inside the wire time.
 ///
-/// Frame cycle = max(wire + latch, CPU). Wire = N_LEDS × 24 bit periods
-/// × 1.25 µs = 9.00 ms at N_LEDS = 300, so the panel ceiling is ~110 fps;
-/// if render+transpose ever exceeds the wire time the next buffer is
-/// still being filled as its transfer starts (a torn frame, not a hang).
+/// Frame cycle = max(wire + pad, CPU). Wire = N_LEDS × 24 bit periods ×
+/// 1.282 µs (10.25 SM cycles per period at the 8 MHz SM clock — the
+/// LOW-parking PULL, see the program) = 9.23 ms at N_LEDS = 300, plus the
+/// 80 µs in-band pad, so the panel ceiling is ~107 fps; if render+transpose
+/// ever exceeds the wire time the next buffer is still being filled as its
+/// transfer starts (a torn frame, not a hang).
 ///
 /// - `S`        – PIO state machine index
 /// - `N_LEDS`   – number of LEDs **per strip**
 pub struct PioWs2812ParallelDriver<'d, P: Instance, const S: usize, const N_LEDS: usize> {
     dma: Channel<'d>,
     sm: StateMachine<'d, P, S>,
-    /// Double-buffered DMA payloads (packed bit-column words).
+    /// Double-buffered DMA payloads: packed bit-column words followed by
+    /// `PAD_WORDS` zeros (the in-band latch gap; zeroed once, never written).
     buf: [Vec<u32>; 2],
     /// Index of the buffer *not* currently on the wire — the transpose
     /// target and the next transfer to start.
@@ -158,17 +179,21 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
 
         cfg.use_program(&program.prg, &[]);
 
-        // Clock: 800 kHz WS2812 rate × 10 PIO cycles per bit.
+        // SM cycle = 1/8 MHz: the 10-cycle nominal bit period. The program
+        // spends 10.25 cycles per period (the LOW-parking PULL), so the
+        // wire runs ~780 kHz — 2.5 % slow, comfortably inside WS2812B's
+        // tolerance and the correct side of it (slow never clips a bit).
         let clock_freq = U24F8::from_num(clk_sys_freq() / 1000);
         let ws2812_freq = U24F8::from_num(800);
         let bit_freq = ws2812_freq * CYCLES_PER_BIT;
         cfg.clock_divider = clock_freq / bit_freq;
 
-        // One OSR word (4 columns of 8 strip-bits) per 4 OUTs, refilled
-        // without instruction cost — see the program comment above.
+        // One OSR word (4 columns of 8 strip-bits) per 4 OUTs, refilled by
+        // the explicit PULL at loop top — never auto_fill, which would move
+        // the stall onto `OUT` and park the pins HIGH (see the program doc).
         cfg.fifo_join = FifoJoin::TxOnly;
         cfg.shift_out = ShiftConfig {
-            auto_fill: true,
+            auto_fill: false,
             threshold: 32,
             direction: ShiftDirection::Left,
         };
@@ -181,7 +206,7 @@ impl<'d, P: Instance, const S: usize, const N_LEDS: usize> PioWs2812ParallelDriv
         sm.set_enable(true);
 
         // BITS * N_LEDS is a multiple of 4 (24-bit pixels, u32 words).
-        let n_words: usize = BITS * N_LEDS / 4;
+        let n_words: usize = BITS * N_LEDS / 4 + PAD_WORDS;
         let buf_0 = alloc::vec![0u32; n_words];
         let buf_1 = alloc::vec![0u32; n_words];
 
@@ -242,14 +267,15 @@ impl<const N_LEDS: usize, P: Instance> Ws2812ParallelDriver<N_LEDS> for PioWs281
         // --- Hand over the wire to this frame ---
         if self.started {
             // `Transfer`'s waker plumbing is crate-private, so completion
-            // is a busy poll. The transfer is normally long done by the
-            // time the transpose finishes; the loop then costs one read.
+            // is a busy poll. Wake latency is safe by construction here:
+            // the frame just transferred ends with PAD_WORDS of zeros, the
+            // strips have been latched by them, and the waiting SM parks
+            // LOW at the loop-top PULL — a late start only stretches the
+            // LOW gap, it can never corrupt a boundary. (The latch is
+            // in-band, so no timer delay is needed — or wanted.)
             while self.dma.regs().ctrl_trig().read().busy() {
                 embassy_time::Timer::after_micros(DMA_POLL_US).await;
             }
-            // Pins have been low since the last bit; add explicit latch
-            // margin on top of the DMA-poll overshoot.
-            embassy_time::Timer::after_micros(LATCH_US).await;
         }
 
         // `dma_push` arms the channel (EN=true) inside `configure()` — the
