@@ -5,6 +5,7 @@
     "build": "vite build",
     "check": "deno check src/App.tsx",
     "serve": "vite preview",
+    "wasm": "deno run --allow-run --allow-read --allow-write --allow-env embed_wasm.ts",
     "compress": "deno run --allow-read --allow-write compress.ts"
   },
   "nodeModulesDir": "auto",

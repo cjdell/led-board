@@ -11,13 +11,15 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 | Path | What it is |
 |---|---|
 | `led_core/` | **All system logic** (`no_std`): picoserve web app, WebSocket pump, display worker, heartbeat, config, screen model. Platform boundary = traits (`Board`, `OtaBackend`, `LocalFsTrait`, `Ws2812ParallelDriver`). Compiles for both thumbv8m and the host (`--features std`). |
+| `animations/` | **The one animation implementation**: every `AnimationEnum` renderer (festival scenes are pure `fn(ms, buffer)` functions). Shared by firmware, sim, and the browser preview (via `anim_wasm`). |
+| `anim_wasm/` | The `animations` crate built for `wasm32-unknown-unknown` behind a tiny C ABI — the web UI's preview engine. Embedded into the SPA as base64 by `web/embed_wasm.ts`. See "Animation previews". |
 | `firmware/` | Pico 2 W (RP2351) hardware impl: bin target `ws`, PIO WS2812 driver, flash stores, `Board` impls (cyw43), embassy-net transports (incl. the retired `radio` tunnel). Feature matrix below. |
 | `sim/` | macOS full-system simulator (`just sim` — dot-matrix window + real web UI on :8080) + old `animation_dev` scratchpad. |
 | `radio_link/` | **RETIRED Nov 2026** (ESP32 slave radio): shared `no_std` framed-protocol crate. Kept as history. |
 | `slave_radio/` | **RETIRED Nov 2026**: ESP32-C3 firmware (esp-hal, RISC-V). **Detached workspace** — excluded from the root workspace and has its own `Cargo.lock` + `.cargo/config.toml` (a trap for repo-root cargo commands, see below). |
 | `embedded_tools/` | `LocalFs`/`ConfigFile` + the **log facade** (`use embedded_tools::{info,warn,error,debug,Debug2Format}`; defmt on embedded, println on host — feature `defmt` xor `std`). |
 | `ws_client/` | Host-side client. |
-| `web/` | SPA (Solid + TypeScript, Deno/vite, no Bootstrap — custom theme in `src/theme.scss`). `web/compile.sh` → `web/bundle/index.html.gz` (gitignored, include_bytes'd into firmware + sim). `deno task dev` = :3000 dummy API; `deno task check` / `fmt`. |
+| `web/` | SPA (Solid + TypeScript, Deno/vite, no Bootstrap — custom theme in `src/theme.scss`). `web/compile.sh` = wasm preview build + vite build + gzip → `web/bundle/index.html.gz` (gitignored, include_bytes'd into firmware + sim). `deno task dev` = :3000 dummy API; `deno task check` / `fmt`; `deno task wasm` (or `just wasm`) regenerates the gitignored, generated `src/lib/wasm_gen.ts` — needed before dev/check/build. |
 | `docs/slave-radio.md` | **RETIRED**: complete ESP32 slave-radio forensics — wiring, architecture, flashing/OTA, monitoring quirks, protocol. History only. |
 | `README.md` | Authoritative pinout table + architecture diagrams (Mermaid). |
 
@@ -38,6 +40,12 @@ flashing anything; most failure modes here are tooling traps, not code bugs.
 - Rust size/objcopy tooling: Apple's `size` can't read ELF. Use
   `$(rustc --print sysroot)/lib/rustlib/<host>/bin/llvm-size` and
   `llvm-objcopy` (or `cargo objcopy` / `cargo-binutils`).
+- **Web dev/check/build needs the generated `web/src/lib/wasm_gen.ts`**
+  (gitignored): run `just wasm` once per animations change first — or just
+  `./web/compile.sh`, which chains wasm → vite → gzip. It builds
+  `-p anim-wasm --target wasm32-unknown-unknown`, so the rustup PATH rule
+  applies there too (the Homebrew toolchain has no wasm target;
+  `rust-toolchain.toml` now lists `wasm32-unknown-unknown`).
 
 ## led_core + sim: the firmware logic on the Mac (Nov 2026)
 
@@ -88,6 +96,52 @@ Traps in this layer (all verified):
   (`Server::new_tokio`, `Socket for tokio::net::TcpStream`) — that's the
   sim's transport; `CONFIG`/`WEB_TASK_POOL_SIZE` are re-exported from
   `led_core::tasks::http` so both platforms share the timeouts.
+
+## Animation previews: the firmware's code in the browser (Nov 2026)
+
+The web app has **no hand-written animation painters anymore**. Previews
+run the real `animations` crate compiled for `wasm32-unknown-unknown`
+(`anim_wasm/`, cdylib + rlib), base64-inlined into the single-file SPA at
+build time (`web/embed_wasm.ts` → generated, gitignored
+`web/src/lib/preview.ts`'s sibling `wasm_gen.ts`).
+`web/src/lib/preview.ts` is only a loader now: shared rAF loop with a
+per-tile fps budget → `anim_render(JSON.stringify(animation), ms)` → blit
+the returned RGB888 (same 7200 B row-major layout as `GET /api/frame`).
+
+- **One wire format**: `JSON.stringify` of the UI's `Animation` value is
+  exactly serde's JSON of `AnimationEnum`, which the wasm parses with the
+  same `Deserialize` derive as the playlist files. If the board can play
+  it, the preview can play it. Text cards get the real 6×12/10×20
+  embedded-graphics fonts, painted into the framebuffer — no canvas
+  font overlay.
+- **Why base64 in the bundle**: picoserve serves exactly one gzipped HTML
+  file — there is no route to `fetch()` a `.wasm` — and the sim embeds the
+  same bytes. Artifact: ~191 KB after `wasm-opt -Oz -all` (~230 KB before;
+  `[profile.release-wasm]` = opt-level z, fat LTO, panic=abort, strip),
+  ≈ +104 KB gzipped in the bundle. A separate `/anim.wasm` route would
+  save ~19 KB on the wire but needs firmware + sim routes and a MIME type
+  — not worth it at this size.
+- **Hand-rolled C ABI, not wasm-bindgen** (`anim_alloc`/`anim_free`/
+  `anim_render`/`anim_frame_ptr`/`anim_error_*`) — bindgen glue fights the
+  inline-everything single-file build; keep it out. `anim_render` caches
+  the parsed animation keyed on its JSON string, so the ~8 fps library
+  grid doesn't re-parse every frame.
+- **Previews show pre-gamma sRGB at full brightness** — the same reasoning
+  as `/api/frame` and the sim default: the panel's γ stage exists to
+  reproduce exactly these colours on linear strips, and the canvas already
+  applies sRGB.
+- **A panic is a trap**, same contract as the firmware (where it would be
+  a watchdog reset). The loader re-instantiates once or twice, then
+  disables previews to a `Blank`-navy frame with a toast — the SPA itself
+  never dies on preview failure.
+- **`cargo test -p anim-wasm`** (host, via the rlib) renders every enum
+  variant at several timestamps — the parity net that makes "one
+  implementation" safe. It immediately found and fixed a real firmware
+  bug: `Fireworks` computed `ms_since_start % 200 - 100` in `u32`, which
+  wrapped, and half the bursts flew off-panel. Keep its `ALL_JSON` list in
+  sync when `AnimationEnum` grows.
+- `just ci` runs `cargo test -p anim-wasm` and `just wasm` before the deno
+  checks; `web/compile.sh` chains wasm → vite → gzip.
 
 ## Building
 
@@ -267,13 +321,17 @@ acceptance harness — are consolidated in
   Wifi builds are `wifi,defmt_tcp` and logs come via
   `defmt-print ... tcp --port 19021`. `scripts/stress_wifi.sh` captures it and
   reports per-load throughput with the stress.sh acceptance bar.
-- **Bundle size note (Nov 2026, festival scene set)**: `web/compile.sh` now
-  produces a **45,790 B** gzipped single-file bundle (40,566 B before the new
-  animation previews). Re-run `web/compile.sh` before flashing UI changes; the
-  sim embeds the same gz.
+- **Bundle size note (Nov 2026, wasm previews)**: `web/compile.sh` now
+  produces a **149,952 B** gzipped single-file bundle — up from 45,790 B
+  because the base64-inlined `anim_wasm` preview engine costs ~104 KB gz
+  (see "Animation previews"). Still fine for the 1020 K slot and the
+  measured download rate (~0.4 s per load at venue throughput), but
+  **re-run acceptance at the new size** before quoting load times again.
+  Re-run `web/compile.sh` before flashing UI changes; the sim embeds the
+  same gz.
 - **Wi-Fi acceptance PASSED (Nov 2026)**: `HOST=http://<ip>/ ./scripts/stress_wifi.sh`
   → 15/15 identical 73,541 B loads (pre-truncate-fix number; loads are now
-  40,566 B after the UI rewrite — re-run acceptance at the new size), one sha256 group, 0 curl failures, 0 guard
+  149,952 B with the wasm preview engine — re-run acceptance at the new size), one sha256 group, 0 curl failures, 0 guard
   trips. Singles ≈0.16 s (≈3.3–3.7 Mbit/s), 4-bursts ≈0.3–0.5 s (≈1.2–2 Mbit/s)
   — 7–10× the (now-retired) radio relay (≈46 KB/s ≈ 0.37 Mbit/s at 460800
   UART), which is what retired the slave radio.
@@ -317,7 +375,10 @@ sector-padded OTA, heap telemetry, paced upload): **wifi 576,696 B, bench
 console 667,480 B**. After the panel frame mirror (`/api/frame`, +7.2 KB
 `.bss`), dropping `MadameRatcliffe` and the supervised mDNS responder:
 **wifi 579,244 B, bench console 669,264 B** (retired `radio` build: 536,232 B
-— the linker drops the responder there, it never spawns). The old wifi tightness is
+— the linker drops the responder there, it never spawns). After the wasm
+preview engine replaced the TypeScript painters (149,952 B gz bundle,
+~104 KB of it base64 wasm — see "Animation previews"): **wifi 683,564 B
+(~361 K slot headroom), bench console 773,584 B**. The old wifi tightness is
 gone; the next ceiling is the 1020 K slot, not the SPA. Console builds now fit
 comfortably again. No size pressure anywhere else.
 
@@ -366,9 +427,11 @@ comfortably again. No size pressure anywhere else.
   γ-stage exists to reproduce exactly those colors on linear strips, so a
   browser can paint it 1:1. The UI's `/now` + playlist heroes
   (`<LedMatrix live>`) poll it at 2 fps (`web/src/lib/liveframe.ts`) and
-  fall back to the TypeScript painters when unavailable (dummy dev mode,
-  pre-mirror firmware, board offline). Library-card thumbnails stay painter
-  based. Streaming goes through `Content` from the mutex guard — never copy
+  fall back to the local wasm preview (`web/src/lib/preview.ts` — same
+  renderers, so the fallback is frame-accurate, only the elapsed-time base
+  differs) when unavailable (dummy dev mode, pre-mirror firmware, board
+  offline). Library-card thumbnails are pure wasm renders of the playlist
+  item. Streaming goes through `Content` from the mutex guard — never copy
   `PanelFrame` onto a task stack (7.2 KB).
 - **mDNS responder (Nov 2026, hardened)**: `mdns_task` (tasks/common.rs) is a
   supervised **session loop** over `edge_mdns`, not a one-shot spawn: it

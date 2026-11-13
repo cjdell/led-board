@@ -199,7 +199,7 @@ export class RealDeviceApi implements DeviceApi {
 
   /// `GET /api/frame` — live panel mirror (raw RGB888). Null instead of
   /// throwing when the frame feed is unavailable: pre-mirror firmware
-  /// answers 404, and callers degrade to the painter preview.
+  /// answers 404, and callers degrade to the local wasm preview.
   public async getPanelFrame(): Promise<Uint8Array | null> {
     try {
       const res = await fetch(`${this.baseUrl}frame`, { cache: "no-store" });

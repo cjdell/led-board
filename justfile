@@ -63,7 +63,19 @@ ci:
     cargo check -p firmware --features wifi,defmt_tcp,console --target thumbv8m.main-none-eabihf
     cargo test -p sim
     cargo test -p radio_link
+    cargo test -p anim-wasm
+    just wasm
     cd web && deno task check && deno fmt --check src
+
+# Rebuild the browser animation engine (firmware renderers → wasm32) and
+# embed it in the web app. Needed once per animations change before web
+# dev/check/build — src/lib/wasm_gen.ts is generated, not committed.
+wasm:
+    cd web && deno task wasm
+
+# Full web bundle exactly as firmware + sim embed it: wasm + SPA + gzip.
+web:
+    ./web/compile.sh
 
 ota:
     #!/usr/bin/env bash

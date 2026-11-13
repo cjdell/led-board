@@ -1,5 +1,8 @@
 node_modules/
 dist/
 bundle/
-public/wasm/*.wsm
+public/wasm/
 .vite/
+
+# Regenerated base64-inlined animation engine (web/embed_wasm.ts).
+src/lib/wasm_gen.ts

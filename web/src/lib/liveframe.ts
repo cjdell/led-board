@@ -1,12 +1,11 @@
 /// Live panel mirror: paints the board's real framebuffer (`GET /api/frame`,
 /// raw RGB888 from the display worker) into a `LedMatrix` canvas, so the
-/// "now playing" tiles show what the LEDs actually display instead of the
-/// hand-drawn TypeScript painters.
+/// "now playing" tiles show what the LEDs actually display.
 ///
 /// The board publishes at ~4 fps; polling at 2 fps is plenty for the
 /// dot-matrix content. When the feed goes unavailable (board rebooting, old
 /// firmware, radio link down) polling backs off and `onLive(false)` lets the
-/// component run the painter fallback until the next probe succeeds.
+/// component run the local wasm preview until the next probe succeeds.
 
 import { PANEL_FRAME_BYTES, PANEL_HEIGHT, PANEL_WIDTH } from "./device/common.ts";
 

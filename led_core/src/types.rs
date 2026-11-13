@@ -180,8 +180,9 @@ pub type PlaylistWatchReceiver = watch::Receiver<'static, CriticalSectionRawMute
 /// the authored colors. The panel's gamma stage exists to make the linear
 /// strips reproduce exactly those colors, so this is what the LEDs look like
 /// to the eye, and a browser can paint it 1:1. `seq` counts publishes.
-/// `GET /api/frame` serves `rgb` raw so the UI mirrors the real panel
-/// instead of approximating it with the TypeScript painters.
+/// `GET /api/frame` serves `rgb` raw so the UI mirrors the real panel;
+/// the SPA's offline previews run the same renderers through `anim_wasm`,
+/// so both paths produce identical frames.
 pub struct PanelFrame {
     pub seq: u32,
     pub rgb: [u8; crate::led_screen::TOTAL_PIXELS * 3],

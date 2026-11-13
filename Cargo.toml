@@ -3,6 +3,7 @@ resolver = "2"
 exclude = ["slave_radio"]
 members = [
     "animations",
+    "anim_wasm",
     "defmt_tcp",
     "embedded_tools",
     "firmware",
@@ -26,3 +27,16 @@ opt-level = 'z'
 # re-measuring both firmware sizes; see AGENTS.md "Firmware sizes".
 [profile.release.package.animations]
 opt-level = "s"
+
+# Browser build of the preview engine (`anim_wasm`): the artifact is
+# base64-inlined into the single-file SPA bundle served by the board, so
+# every byte here costs 4/3 in the bundle and one more on the OTA link.
+# Never used for embedded targets.
+[profile.release-wasm]
+inherits = "release"
+debug = false
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

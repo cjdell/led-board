@@ -101,8 +101,9 @@ impl RequestHandlerService<()> for GetPlaylistHandler {
 
 /// `GET /api/frame` — raw RGB888 (60×40×3 = 7200 B, row-major) snapshot of
 /// the live panel, straight from the display worker's buffer. Lets the UI
-/// mirror what the LEDs actually show instead of approximating it with the
-/// TypeScript painters. Streams from the mutex guard — no task-stack copy of
+/// mirror what the LEDs actually show; the browser's own previews run the
+/// same Rust renderers (`anim_wasm`) but only what the board renders is
+/// ground truth. Streams from the mutex guard — no task-stack copy of
 /// the frame.
 pub struct GetFrameHandler {}
 

@@ -8,9 +8,9 @@ interface Props extends Omit<JSX.HTMLAttributes<HTMLDivElement>, "classList"> {
   animation: Animation;
   fps?: number;
   /// Mirror the panel the board is *actually* displaying (`GET /api/frame`)
-  /// instead of the local painter approximation — for the "now playing"
-  /// tiles. Falls back to the painter while the frame feed is unavailable
-  /// (dev dummy mode, old firmware, board offline).
+  /// instead of the local wasm render — for the "now playing" tiles. Falls
+  /// back to the wasm preview while the frame feed is unavailable (dev dummy
+  /// mode, old firmware, board offline).
   live?: boolean;
 }
 
@@ -21,7 +21,7 @@ export function LedMatrix(props: Props) {
   const [, rest] = splitProps(props, ["animation", "fps", "live"]);
 
   let canvas!: HTMLCanvasElement;
-  let stopPainter: (() => void) | undefined;
+  let stopPreview: (() => void) | undefined;
   let stopMirror: (() => void) | undefined;
 
   const animation = createMemo(() => props.animation);
@@ -42,19 +42,19 @@ export function LedMatrix(props: Props) {
       stopMirror = undefined;
     }
 
-    // While the mirror is live it owns the canvas; otherwise the painter
-    // keeps the tile alive (and takes it back if the board disappears).
+    // While the mirror is live it owns the canvas; otherwise the wasm
+    // preview keeps the tile alive (and takes it back if the board disappears).
     if (mirroring && mirrorLive()) {
-      stopPainter?.();
-      stopPainter = undefined;
+      stopPreview?.();
+      stopPreview = undefined;
     } else {
-      stopPainter?.();
-      stopPainter = startPreview(canvas, anim, props.fps ?? 16);
+      stopPreview?.();
+      stopPreview = startPreview(canvas, anim, props.fps ?? 16);
     }
   });
 
   onCleanup(() => {
-    stopPainter?.();
+    stopPreview?.();
     stopMirror?.();
   });
 

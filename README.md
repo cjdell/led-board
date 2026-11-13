@@ -41,6 +41,8 @@ flowchart TD
 | Crate | Role |
 |---|---|
 | `led_core/` | all system logic (web app, tasks, config, screen model), platform-agnostic |
+| `animations/` | every animation renderer — one implementation, shared by firmware, sim, and the browser preview |
+| `anim_wasm/` | the `animations` crate compiled for `wasm32-unknown-unknown`: the web UI's preview engine, base64-inlined into the SPA bundle |
 | `firmware/` | Pico 2 W hardware impl: PIO WS2812, flash stores, `Board` impls, transports |
 | `sim/` | macOS full-system simulator + `animation_dev` scratchpad (`just sim`) |
 | `radio_link/` | **retired Nov 2026**: shared framed protocol between Pico and ESP32 slave radio (history) |

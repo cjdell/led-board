@@ -39,6 +39,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anim-wasm"
+version = "0.1.0"
+dependencies = [
+ "animations",
+ "embedded-graphics-core",
+ "serde_json",
+]
+
+[[package]]
 name = "animations"
 version = "0.1.0"
 dependencies = [

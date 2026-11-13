@@ -252,8 +252,8 @@ impl Animation for AnimationEnum {
                     for _ in 0..burst_count {
                         let x = (WIDTH as i32 / 2) + ((ms_since_start as i32 >> 4) % 20) - 10;
                         let y = (HEIGHT as i32 / 2) + ((ms_since_start as i32 >> 3) % 15) - 7;
-                        let vx = (ms_since_start % 200 - 100) as f32 / 50.0;
-                        let vy = (ms_since_start % 150 - 75) as f32 / 50.0;
+                        let vx = ((ms_since_start % 200) as i32 - 100) as f32 / 50.0;
+                        let vy = ((ms_since_start % 150) as i32 - 75) as f32 / 50.0;
                         let r = ((ms_since_start + 100 * 17) % 256) as u8;
                         let g = ((ms_since_start + 200 * 31) % 256) as u8;
                         let b = ((ms_since_start + 300 * 43) % 256) as u8;
